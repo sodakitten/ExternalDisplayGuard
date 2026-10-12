@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.1.0-beta.1
+
+- Select any nonempty subset of connected physical monitors, on desktops or laptops.
+- Choose any selected display as primary, with independent scaling, rotation and saved layout.
+- Add named presets, tray shortcuts, a 15-second preview confirmation, and automatic rollback.
+- Handle missing selected monitors and preferred-primary reconnection without overwriting the desired profile.
+- Pause on unknown new monitors, remote sessions and active virtual displays.
+- Migrate v1 configuration and preserve the original selected monitor and scale.
+- Verify with an isolated fake backend; no real display or UI tests were run for this beta.
+- Leave the previously installed stable application untouched during development.
+
 ## v1.0.0
 
 - Keep one selected physical external monitor active, or use an extended laptop/external desktop with the external monitor as primary.

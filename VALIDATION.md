@@ -1,16 +1,23 @@
 # Validation
 
-Tested on Windows 11 x64, build 26300, using a laptop panel and one HDMI external monitor.
+## v1.1.0-beta.1
 
-- Native Win32 structure layouts and topology policies pass automated checks.
-- Embedded icons load at 16, 32, 48 and 256 pixels.
-- External-only and independent extended desktops work, with the external monitor at the primary origin.
-- External resolution and refresh rate remain 3840 × 2160 at approximately 160 Hz during the tested switches.
-- Injecting an extended desktop and 175% external scaling is corrected to external-only and 200% in approximately three seconds.
-- Scaling changes are respected while paused and in extended mode.
-- Laptop panel scaling remains unchanged during the tested external scaling corrections.
-- Updating the installed application preserves configuration and existing login startup entries.
+Development followed the requirement not to test on the user's desktop. The installed v1.0.0 EXE, configuration, startup entries and real display modes were not changed. The new GUI, installer, updater, uninstaller and real monitor backend were not run.
 
-The live verification scripts change real display settings. They are intended for an interactive local desktop with one connected external screen, and finish in external-only mode. `--self-test` only checks code and resource behavior and does not change display settings.
+Validation consists of compilation and an isolated console runner using FakeDisplayBackend. It does not load application storage, register windows, enumerate WMI, call native display APIs or change the desktop. All monitor names, paths, identities and modes in the tests are synthetic.
 
-Physical unplug/replug, lid changes, suspend/resume, actual next login, different graphics drivers and long-term operation have not been comprehensively tested. DPI scaling uses undocumented Windows packet types and may need updates after an OS change.
+Coverage includes:
+
+- Every nonempty subset for three and four monitors, with every eligible primary choice: 12 three-monitor / primary variants and 32 four-monitor / primary variants, each on desktop and laptop fixtures.
+- Exact enabled sets, distinct adapter/source assignments, primary origin, per-monitor scale and no repeated mutation for a matching state.
+- Missing primary, fallback monitor, reconnection, retained desired profile, unknown monitor pause, remote and active virtual-display pause.
+- Gaps, overlaps, valid vertical layouts, portrait rotation, limited source capacity, multiple adapters and unused mode removal.
+- Partial driver failure, incomplete driver results, failed rollback cooldown, unsupported scale and persistent warning state.
+- Preview confirmation, timeout, cancellation, late confirmation, unexpected deactivation, offline-only selections and save failure recovery.
+- Safe first install, legacy migration, disabled-state preservation, configuration round trips and isolated profile copies.
+
+Run `test-offline.ps1` for a JSON report in the ignored `evidence` folder. Real three/four-monitor behavior, native path validation, drivers, docking stations, UI layout, per-monitor DPI, hotplug, next login, suspend/resume and long-term operation remain unverified.
+
+## Historical v1.0.0
+
+The previous single-external / laptop-two-display version had actual local desktop checks on Windows 11 build 26300. Those historical results do not validate the new multi-monitor backend or new UI.

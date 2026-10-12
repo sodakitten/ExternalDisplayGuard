@@ -25,7 +25,7 @@ New-ItemProperty -Path $runKey -Name ExternalDisplayGuard -Value ('"' + $destina
 $shell = New-Object -ComObject WScript.Shell
 $shortcutRoot = Join-Path ([Environment]::GetFolderPath('Programs')) 'ExternalDisplayGuard'
 New-Item -ItemType Directory -Path $shortcutRoot -Force | Out-Null
-foreach ($item in @(@{Name='外接屏守护';Args='--settings'},@{Name='仅外接屏';Args='--external'},@{Name='双屏扩展';Args='--extend'},@{Name='停用守护并恢复笔记本屏';Args='--internal'})) {
+foreach ($item in @(@{Name='屏幕守护';Args='--settings'},@{Name='仅所选主屏';Args='--single'},@{Name='全部屏幕扩展';Args='--all'},@{Name='停用屏幕守护';Args='--disable'})) {
     $shortcut = $shell.CreateShortcut((Join-Path $shortcutRoot ($item.Name + '.lnk')))
     $shortcut.TargetPath = $destinationExe
     $shortcut.Arguments = $item.Args
