@@ -2,6 +2,7 @@
 
 ## v1.1.0-beta.1
 
+- Support portable mode with a `portable.flag` next to the EXE; keep configuration and logs in the application directory without automatic installation or startup registration.
 - Select any nonempty subset of connected physical monitors, on desktops or laptops.
 - Choose any selected display as primary, with independent scaling, rotation and saved layout.
 - Add named presets, tray shortcuts, a 15-second preview confirmation, and automatic rollback.

@@ -20,4 +20,8 @@ Run `test-offline.ps1` for a JSON report in the ignored `evidence` folder. Real 
 
 ## Historical v1.0.0
 
+### Later portable packaging
+
+The portable storage switch was compiled with warnings treated as errors; the new application was not launched. At the user's later request, the old installation was backed up, stopped and removed along with its login startup value and known shortcuts, using the current uninstaller's display-preserving behavior. Eight other login startup values were checked unchanged. The old configuration, including its 200% scale preference, was copied to the portable directory. No native monitor tests or display-mode switches were performed as part of this migration.
+
 The previous single-external / laptop-two-display version had actual local desktop checks on Windows 11 build 26300. Those historical results do not validate the new multi-monitor backend or new UI.

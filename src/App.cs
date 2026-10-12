@@ -11,7 +11,8 @@ using Microsoft.Win32;
 
 namespace ExternalDisplayGuard {
  public static class Storage {
-  public static readonly string Root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"ExternalDisplayGuard");
+  public static readonly bool Portable=File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"portable.flag"));
+  public static readonly string Root=Portable?AppDomain.CurrentDomain.BaseDirectory:Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"ExternalDisplayGuard");
   public static readonly JavaScriptSerializer Json=new JavaScriptSerializer();
   public static string ConfigPath {get{return Path.Combine(Root,"config.json");}}
   public static Config Load(){return File.Exists(ConfigPath)?ConfigCodec.Parse(File.ReadAllText(ConfigPath)):new Config();}
