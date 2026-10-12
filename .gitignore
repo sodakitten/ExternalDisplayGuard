@@ -1,0 +1,10 @@
+dist/
+evidence/
+TEST_RESULTS.md
+*.tmp
+*.bak
+*.log
+*.reg
+config.json
+status.json
+backups/
