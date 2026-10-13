@@ -4,155 +4,239 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
 namespace ExternalDisplayGuard {
- public class Config {public bool Enabled=true;public string Mode="external";public string TargetPath="";public string TargetName="";public int ExternalScalePercent=200;}
  public static class Storage {
-  public static readonly string Root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"ExternalDisplayGuard");
+  public static readonly bool Portable=File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"portable.flag"));
+  public static readonly string Root=Portable?AppDomain.CurrentDomain.BaseDirectory:Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"ExternalDisplayGuard");
   public static readonly JavaScriptSerializer Json=new JavaScriptSerializer();
   public static string ConfigPath {get{return Path.Combine(Root,"config.json");}}
-  public static Config Load(){if(!File.Exists(ConfigPath))return new Config();var c=Json.Deserialize<Config>(File.ReadAllText(ConfigPath));if(c==null || (c.Mode!="external"&&c.Mode!="extend"))throw new InvalidDataException("配置文件无效，请检查 "+ConfigPath);return c;}
+  public static Config Load(){return File.Exists(ConfigPath)?ConfigCodec.Parse(File.ReadAllText(ConfigPath)):new Config();}
   public static void Write(string path,object data){Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)));File.WriteAllText(path,Json.Serialize(data),new System.Text.UTF8Encoding(false));}
   public static void Save(Config c){Directory.CreateDirectory(Root);string temp=ConfigPath+".tmp";Write(temp,c);if(File.Exists(ConfigPath))File.Replace(temp,ConfigPath,ConfigPath+".bak");else File.Move(temp,ConfigPath);}
-  public static void Log(string msg){try {Directory.CreateDirectory(Root);string p=Path.Combine(Root,"guard.log");if(File.Exists(p)&&new FileInfo(p).Length>1024*1024){File.Copy(p,p+".1",true);File.Delete(p);}File.AppendAllText(p,DateTimeOffset.Now.ToString("o")+" "+msg+Environment.NewLine);}catch{} }
-  public static void Startup(bool enabled){using(var k=Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")){if(enabled)k.SetValue("ExternalDisplayGuard","\""+Application.ExecutablePath+"\"");else k.DeleteValue("ExternalDisplayGuard",false);}}
-  public static bool AutoStart {get{using(var k=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")){return k!=null&&k.GetValue("ExternalDisplayGuard")!=null;}}}
+  public static void Log(string msg){try{Directory.CreateDirectory(Root);string p=Path.Combine(Root,"guard.log");if(File.Exists(p)&&new FileInfo(p).Length>1024*1024){File.Copy(p,p+".1",true);File.Delete(p);}File.AppendAllText(p,DateTimeOffset.Now.ToString("o")+" "+msg+Environment.NewLine);}catch{}}
+  public static void Startup(bool enabled){using(var k=Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")){if(enabled)k.SetValue("ExternalDisplayGuard","\""+Application.ExecutablePath+"\" --background");else k.DeleteValue("ExternalDisplayGuard",false);}}
+  public static bool AutoStart {get{using(var k=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))return k!=null&&k.GetValue("ExternalDisplayGuard")!=null;}}
  }
- class Receiver: NativeWindow,IDisposable {
-  public Action<int> Command;public Action Changed;public uint MessageId;
-  public Receiver(){MessageId=NativeDisplay.RegisterWindowMessage("ExternalDisplayGuard.Command.v1");CreateHandle(new CreateParams {Caption="ExternalDisplayGuard.Events",Style=0});}
+ class Receiver:NativeWindow,IDisposable {
+  public Action<int> Command;public Action Changed;public readonly uint MessageId;
+  public Receiver(){MessageId=NativeDisplay.RegisterWindowMessage("ExternalDisplayGuard.Command.v2");CreateHandle(new CreateParams{Caption="ExternalDisplayGuard.Events.v2",Style=0});}
   protected override void WndProc(ref Message m){if(m.Msg==(int)MessageId){if(Command!=null)Command(m.WParam.ToInt32());}else if(m.Msg==0x7e||m.Msg==0x219){if(Changed!=null)Changed();}base.WndProc(ref m);}
   public void Dispose(){DestroyHandle();}
  }
+ class ScreenChoice {
+  public string Id,Name;public override string ToString(){return Name;}
+ }
  class Guard:ApplicationContext {
-  Config config;Receiver receiver;NotifyIcon tray;Icon trayIcon,windowIcon;System.Windows.Forms.Timer timer;Form settings;Label state;RadioButton external,extend;CheckBox enabled,startup;ComboBox monitorBox,scaleBox;
-  List<Monitor> choices=new List<Monitor>();bool updating,locked,suspended,busy;DateTime pauseUntil=DateTime.MinValue,due=DateTime.UtcNow.AddSeconds(2),nextPoll=DateTime.MinValue,lastApply=DateTime.MinValue;
-  string status="正在检测显示器…",lastSignature="",lastReport="";int failures;Queue<DateTime> changes=new Queue<DateTime>(),scaleChanges=new Queue<DateTime>();
+  readonly Config config;readonly NativeBackend backend=new NativeBackend();readonly DisplayCoordinator engine;
+  readonly Receiver receiver;readonly NotifyIcon tray;readonly Icon trayIcon,windowIcon;readonly System.Windows.Forms.Timer timer;
+  Form settings;Label status,preview,presetNotice;DataGridView grid;ComboBox primary,presets;TextBox profileName;CheckBox enabled,startup;
+  Button apply,confirm,cancel;bool updating,locked,suspended,busy,editorDirty,editorSaving;DateTime editorDue;DateTime due=DateTime.UtcNow.AddSeconds(2),next=DateTime.MinValue;string lastStatus="";
+  Snapshot inventory;List<ScreenPreference> draftKnown=new List<ScreenPreference>();Size normalEditorSize=new Size(1120,640);
   public Guard(Config c){
-   config=c;receiver=new Receiver();receiver.Command=Command;receiver.Changed=Schedule;
-   int smallIcon=NativeDisplay.GetSystemMetrics(49);int traySize=smallIcon<=16?16:smallIcon<=24?24:smallIcon<=32?32:smallIcon<=48?48:64;
-   trayIcon=Artwork.Icon(traySize);windowIcon=Artwork.Icon(32);tray=new NotifyIcon{Icon=trayIcon,Text="外接屏守护",Visible=true};
-   var menu=new ContextMenuStrip();menu.Items.Add("打开设置",null,(s,e)=>ShowSettings());menu.Items.Add("仅外接屏",null,(s,e)=>SetMode("external"));menu.Items.Add("双屏扩展 · 外接为主屏",null,(s,e)=>SetMode("extend"));
-   menu.Items.Add(new ToolStripSeparator());menu.Items.Add("暂停 10 分钟",null,(s,e)=>Pause());menu.Items.Add("恢复守护",null,(s,e)=>Enable());menu.Items.Add("停用并恢复笔记本屏幕",null,(s,e)=>Internal());menu.Items.Add("打开日志",null,(s,e)=>OpenLog());menu.Items.Add("退出本次运行",null,(s,e)=>ExitThread());
-   tray.ContextMenuStrip=menu;tray.DoubleClick+=(s,e)=>ShowSettings();timer=new System.Windows.Forms.Timer{Interval=500};timer.Tick+=(s,e)=>Tick();timer.Start();
-   SystemEvents.PowerModeChanged+=Power;SystemEvents.SessionSwitch+=Session;Storage.Log("启动；模式="+config.Mode+"；启用="+config.Enabled);
+   config=c;engine=new DisplayCoordinator(c,backend,Storage.Log);engine.Changed=()=>{Storage.Save(config);RebuildMenu();Sync();};
+   receiver=new Receiver();receiver.Command=command=>Safe(()=>Command(command));receiver.Changed=()=>{due=DateTime.UtcNow.AddSeconds(2);next=DateTime.MinValue;};
+   int pixels=NativeDisplay.GetSystemMetrics(49);trayIcon=Artwork.Icon(pixels<=16?16:pixels<=24?24:pixels<=32?32:pixels<=48?48:64);windowIcon=Artwork.Icon(32);
+   tray=new NotifyIcon{Icon=trayIcon,Text="屏幕守护",Visible=true};tray.DoubleClick+=(s,e)=>Safe(ShowSettings);RebuildMenu();
+   timer=new System.Windows.Forms.Timer{Interval=500};timer.Tick+=(s,e)=>Tick();timer.Start();
+   SystemEvents.PowerModeChanged+=Power;SystemEvents.SessionSwitch+=Session;Storage.Log("v1.1 启动；配置版本="+config.SchemaVersion);
   }
-  void Schedule(){due=DateTime.UtcNow.AddSeconds(2);}
-  void Power(object sender,PowerModeChangedEventArgs e){receiverCommandOnUi(()=>{suspended=e.Mode==PowerModes.Suspend;if(e.Mode==PowerModes.Resume){suspended=false;due=DateTime.UtcNow.AddSeconds(4);}});}
-  void Session(object sender,SessionSwitchEventArgs e){receiverCommandOnUi(()=>{if(e.Reason==SessionSwitchReason.SessionLock)locked=true;else if(e.Reason==SessionSwitchReason.SessionUnlock || e.Reason==SessionSwitchReason.ConsoleConnect){locked=false;due=DateTime.UtcNow.AddSeconds(3);}});}
-  readonly Queue<Action> pending=new Queue<Action>();void receiverCommandOnUi(Action a){lock(pending)pending.Enqueue(a);}
-  void SetStatus(string s){status=s;tray.Text=("外接屏守护 · "+s).Substring(0,Math.Min(63,("外接屏守护 · "+s).Length));if(state!=null&&!state.IsDisposed)state.Text=s;}
-  void Report(){try{Storage.Write(Path.Combine(Storage.Root,"status.json"),new {Updated=DateTimeOffset.Now.ToString("o"),ProcessId=Process.GetCurrentProcess().Id,Enabled=config.Enabled,Mode=config.Mode,Target=config.TargetName,ExternalScalePercent=config.ExternalScalePercent,Status=status,PauseUntil=pauseUntil==DateTime.MinValue?null:pauseUntil.ToLocalTime().ToString("o"),AutoStart=Storage.AutoStart});}catch{} }
+  void RebuildMenu(){
+   if(tray==null)return;var menu=new ContextMenuStrip();menu.Items.Add("选择亮哪些屏幕…",null,(s,e)=>Safe(ShowSettings));
+   menu.Items.Add("仅所选主屏",null,(s,e)=>Safe(()=>Quick(false,false)));menu.Items.Add("全部物理屏幕扩展",null,(s,e)=>Safe(()=>Quick(true,false)));
+   if(config.Saved.Count>0){menu.Items.Add(new ToolStripSeparator());foreach(var item in config.Saved){var copy=item.Clone();menu.Items.Add(copy.Name,null,(s,e)=>Safe(()=>PreviewProfile(copy)));}}
+   menu.Items.Add(new ToolStripSeparator());menu.Items.Add("暂停 10 分钟",null,(s,e)=>{engine.Pause(DateTime.UtcNow);Sync();});
+   menu.Items.Add("恢复守护",null,(s,e)=>Safe(()=>{engine.Enable();next=DateTime.MinValue;}));menu.Items.Add("停用守护，保留当前显示",null,(s,e)=>{engine.Disable();Sync();});
+   menu.Items.Add("查看日志",null,(s,e)=>OpenLog());menu.Items.Add("退出本次运行",null,(s,e)=>ExitThread());
+   var old=tray.ContextMenuStrip;tray.ContextMenuStrip=menu;if(old!=null)old.Dispose();
+  }
+  void Power(object sender,PowerModeChangedEventArgs e){lock(pending){pending.Enqueue(()=>{if(e.Mode==PowerModes.Suspend)suspended=true;if(e.Mode==PowerModes.Resume){suspended=false;due=DateTime.UtcNow.AddSeconds(4);next=DateTime.MinValue;}});}}
+  void Session(object sender,SessionSwitchEventArgs e){lock(pending){pending.Enqueue(()=>{if(e.Reason==SessionSwitchReason.SessionLock)locked=true;if(e.Reason==SessionSwitchReason.SessionUnlock||e.Reason==SessionSwitchReason.ConsoleConnect){locked=false;due=DateTime.UtcNow.AddSeconds(2);next=DateTime.MinValue;}});}}
+  readonly Queue<Action> pending=new Queue<Action>();
   void Tick(){
    lock(pending){while(pending.Count>0)pending.Dequeue()();}
    if(busy)return;var now=DateTime.UtcNow;
-   if(!config.Enabled){SetStatus("守护已停用");ReportIfChanged();return;}
-   if(locked||suspended||NativeDisplay.GetSystemMetrics(0x1000)!=0){SetStatus("等待本机桌面恢复");ReportIfChanged();return;}
-   if(now<pauseUntil){SetStatus("已暂停至 "+pauseUntil.ToLocalTime().ToString("HH:mm:ss"));ReportIfChanged();return;}
-   if(now<due || now<lastApply.AddSeconds(5))return;
-   if(now<nextPoll)return;nextPoll=now.AddSeconds(5);busy=true;
-   try{
-    var active=NativeDisplay.Query(false);
-    string signature=Storage.Json.Serialize(active.Monitors);
-    if(signature!=lastSignature){Storage.Log("显示状态变化 "+signature);lastSignature=signature;}
-    var target=NativeDisplay.FindTarget(active,config.TargetPath);
-    if(target!=null && NativeDisplay.Matches(active,target.Key,config.Mode)){
-     if(string.IsNullOrEmpty(config.TargetPath)){config.TargetPath=target.DevicePath;config.TargetName=target.Name;Storage.Save(config);}
-     EnsureExternalScale(active,target);
-     failures=0;SetStatus((config.Mode=="external"?"仅外接屏":"双屏扩展，外接为主屏")+" · "+target.Name+(config.Mode=="external"&&config.ExternalScalePercent>0?" · "+config.ExternalScalePercent+"%":""));ReportIfChanged();return;
-    }
-    var all=NativeDisplay.Query(true);target=NativeDisplay.FindTarget(all,config.TargetPath);
-    if(target==null){
-     if(string.IsNullOrEmpty(config.TargetPath)&&all.Monitors.Count(m=>m.External&&m.Available)>1)SetStatus("有多台外接屏，请在设置中选择");
-     else {
-      // When the selected screen is gone, ensure the laptop panel is usable; never force a disconnected target.
-      var inner=all.Monitors.FirstOrDefault(m=>m.Internal&&m.Available);
-      if(inner!=null&&!active.Monitors.Any(m=>m.Active&&m.Available&&(m.Internal||m.External))){lastApply=now;NativeDisplay.InternalOnly();Storage.Log("外接屏离线，恢复内置屏");}
-      SetStatus("目标外接屏未连接，保留可用屏幕");
-     }ReportIfChanged();return;
-    }
-    if(string.IsNullOrEmpty(config.TargetPath)){config.TargetPath=target.DevicePath;config.TargetName=target.Name;Storage.Save(config);}
-    if(config.Mode=="extend"&&!all.Monitors.Any(m=>m.Internal&&m.Available)){SetStatus("内置屏不可用；请开盖后使用双屏扩展");ReportIfChanged();return;}
-    while(changes.Count>0&&now-changes.Peek()>TimeSpan.FromMinutes(1))changes.Dequeue();
-    if(changes.Count>=4){pauseUntil=now.AddMinutes(1);Storage.Log("一分钟内反复切换，自动冷却 60 秒");SetStatus("反复切换，冷却 60 秒");ReportIfChanged();return;}
-    lastApply=now;changes.Enqueue(now);Storage.Log("纠正显示模式="+config.Mode+"；目标="+target.Name);
-    // Keep an active configuration for recovery if the apply call fails part way through.
-    try{NativeDisplay.Apply(all,target,config.Mode);}
-    catch(Exception applyError){Storage.Log("切换失败："+applyError.Message);try{NativeDisplay.Restore(active);Storage.Log("已恢复切换前配置");}catch(Exception rollbackError){Storage.Log("原配置恢复失败："+rollbackError.Message);try{NativeDisplay.InternalOnly();}catch(Exception fallbackError){Storage.Log("内置屏恢复失败："+fallbackError.Message);}}throw;}
-    // Topology and scaling are separate Windows settings. Re-resolve the source after the topology switch.
-    var fresh=NativeDisplay.Query(false);var activated=NativeDisplay.FindTarget(fresh,config.TargetPath);
-    if(activated!=null&&NativeDisplay.Matches(fresh,activated.Key,config.Mode))EnsureExternalScale(fresh,activated);
-    SetStatus("已应用，等待系统确认…");nextPoll=now.AddSeconds(5);ReportIfChanged();
-   }catch(Exception e){failures++;Storage.Log("检查失败："+e.Message);SetStatus("暂未成功："+e.Message);nextPoll=now.AddSeconds(failures>=3?60:10);ReportIfChanged();}
-   finally{busy=false;}
+   if(!locked&&!suspended&&now>=due&&(now>=next||engine.PreviewActive&&now>=engine.PreviewDeadline)){
+    busy=true;try{engine.Step(now);next=now.AddSeconds(5);}finally{busy=false;}
+   }
+   string text=locked||suspended?"等待本机桌面恢复":engine.Status;
+   if(text!=lastStatus){lastStatus=text;tray.Text=("屏幕守护 · "+text).Substring(0,Math.Min(63,("屏幕守护 · "+text).Length));
+    try{Storage.Write(Path.Combine(Storage.Root,"status.json"),new{Updated=DateTimeOffset.Now.ToString("o"),ProcessId=Process.GetCurrentProcess().Id,Enabled=config.Enabled,Profile=config.Current.Name,Selected=config.Current.Screens.Select(x=>new{x.Name,x.ScalePercent}).ToArray(),Status=text,Preview=engine.PreviewActive,AutoStart=Storage.AutoStart});}catch(Exception e){Storage.Log("状态文件写入失败："+e.Message);}}
+   Sync();
+   if(editorDirty&&now>=editorDue&&!engine.PreviewActive&&settings!=null&&!settings.IsDisposed&&!grid.IsCurrentCellInEditMode)try{RememberEditor();}catch(Exception e){editorDirty=false;Storage.Log("界面记忆保存失败："+e.Message);}
   }
-  void EnsureExternalScale(Snapshot snapshot,Monitor target){
-   if(config.Mode!="external"||config.ExternalScalePercent==0)return;
-   if(target.ScalePercent==config.ExternalScalePercent)return;
-   var now=DateTime.UtcNow;while(scaleChanges.Count>0&&now-scaleChanges.Peek()>TimeSpan.FromMinutes(1))scaleChanges.Dequeue();
-   if(scaleChanges.Count>=4){pauseUntil=now.AddMinutes(1);throw new InvalidOperationException("缩放反复被更改，守护冷却 60 秒。");}
-   if(NativeDisplay.SetScale(snapshot,target,config.ExternalScalePercent)){
-    scaleChanges.Enqueue(now);Storage.Log("恢复外接屏缩放="+config.ExternalScalePercent+"%；目标="+target.Name);target.ScalePercent=config.ExternalScalePercent;
+  void Safe(Action action){try{action();}catch(Exception e){Storage.Log(e.ToString());MessageBox.Show(settings,e.Message,"屏幕守护",MessageBoxButtons.OK,MessageBoxIcon.Information);}}
+  void Sync(){
+   if(settings==null||settings.IsDisposed)return;updating=true;status.Text=lastStatus.Length==0?engine.Status:lastStatus;enabled.Checked=config.Enabled;startup.Checked=Storage.AutoStart;
+   bool testing=engine.PreviewActive;confirm.Visible=cancel.Visible=testing;preview.Visible=testing;
+   preview.Text=testing?"请确认画面可见；"+Math.Max(0,(int)Math.Ceiling((engine.PreviewDeadline-DateTime.UtcNow).TotalSeconds))+" 秒后自动还原":"";
+   grid.Enabled=primary.Enabled=presets.Enabled=profileName.Enabled=!testing;
+   apply.Enabled=!testing&&grid.Rows.Cast<DataGridViewRow>().Any(r=>Convert.ToBoolean(r.Cells[0].Value));updating=false;
+  }
+  void RefreshScreens(DisplayProfile selection,bool restoreEditor=false){
+   inventory=backend.Query(true);if(config.Legacy!=null&&ConfigCodec.ResolveLegacy(config,inventory)){Storage.Save(config);selection=config.Current.Clone();}
+   if(selection==null)selection=config.Current.Clone();draftKnown=config.Known.Select(x=>x.Clone()).ToList();
+   var available=inventory.Monitors.Where(m=>MonitorIdentity.IsPhysical(m)&&m.Available).ToList();updating=true;grid.Rows.Clear();
+   var memory=restoreEditor&&config.Editor.Rows.Count>0?config.Editor:null;
+   foreach(var m in available){
+    var selected=selection.Screens.FirstOrDefault(p=>MonitorIdentity.Resolve(p,new[]{m})!=null);
+    var remembered=memory==null?null:memory.Rows.FirstOrDefault(r=>MonitorIdentity.Resolve(r.Preference,new[]{m})!=null);
+    var pref=remembered!=null?remembered.Preference.Clone():selected==null?ScreenPreference.From(m):selected.Clone();pref.Name=m.Name;
+    if(!draftKnown.Any(p=>MonitorIdentity.Resolve(p,new[]{m})!=null))draftKnown.Add(ScreenPreference.From(m));
+    bool check=remembered!=null?remembered.Selected:memory==null&&(selected!=null||(selection.Screens.Count==0&&m.Active));AddRow(pref,check,m.Active?(m.X==0&&m.Y==0?"在线 · 当前主屏":"在线"):"在线 · 未启用",m.ScalePercent,m.Width,m.Height);if(remembered!=null)grid.Rows[grid.Rows.Count-1].Cells[7].Value=remembered.ResolutionText??"保持当前";
+   }
+   if(memory!=null){foreach(var row in memory.Rows.Where(r=>MonitorIdentity.Resolve(r.Preference,available)==null)){AddRow(row.Preference.Clone(),row.Selected,"暂时离线",0);grid.Rows[grid.Rows.Count-1].Cells[7].Value=row.ResolutionText??"保持当前";}}
+   else foreach(var pref in selection.Screens.Where(p=>MonitorIdentity.Resolve(p,available)==null))AddRow(pref.Clone(),true,"暂时离线",0);
+   profileName.Text=memory==null?selection.Name:memory.ProfileName;var actualPrimary=available.FirstOrDefault(m=>m.Active&&m.X==0&&m.Y==0);string wanted=memory!=null?memory.PrimaryId:selection.Screens.Count==0&&actualPrimary!=null?MonitorIdentity.Id(actualPrimary):selection.PrimaryId;updating=false;UpdatePrimary(wanted);Sync();MarkEditorDirty();
+  }
+  void AddRow(ScreenPreference pref,bool check,string state,int currentScale,uint width=0,uint height=0){
+   int scaleIndex=pref.ScalePercent==0?0:Array.IndexOf(NativeDisplay.ScaleSteps,pref.ScalePercent)+1;
+   var scales=ScaleLabels();int index=grid.Rows.Add(check,pref.Name,state,currentScale>0?currentScale+"%":"—",scales[scaleIndex],RotationLabel(pref.Rotation),width>0&&height>0?width+"×"+height:"—",ResolutionSetting.Format(pref.ResolutionWidth,pref.ResolutionHeight));grid.Rows[index].Tag=pref;
+  }
+  static string[] ScaleLabels(){return new[]{"保持当前"}.Concat(NativeDisplay.ScaleSteps.Select(x=>x+"%")).ToArray();}
+  static string RotationLabel(int r){return new[]{"保持当前","横屏","竖屏（右转）","横屏（反向）","竖屏（左转）"}[r];}
+  void UpdatePrimary(string wanted){
+   if(updating)return;updating=true;string old=wanted??(primary.SelectedItem as ScreenChoice==null?"":((ScreenChoice)primary.SelectedItem).Id);
+   primary.Items.Clear();foreach(DataGridViewRow row in grid.Rows)if(Convert.ToBoolean(row.Cells[0].Value)){var p=(ScreenPreference)row.Tag;primary.Items.Add(new ScreenChoice{Id=p.Id,Name=p.Name});}
+   int index=-1;for(int i=0;i<primary.Items.Count;i++)if(MonitorIdentity.Equal(((ScreenChoice)primary.Items[i]).Id,old))index=i;
+   if(index<0&&primary.Items.Count>0)index=0;primary.SelectedIndex=index;updating=false;Sync();
+  }
+  DisplayProfile Draft(){
+   grid.EndEdit();var p=new DisplayProfile{Name=string.IsNullOrWhiteSpace(profileName.Text)?"当前选择":profileName.Text.Trim()};
+   foreach(DataGridViewRow row in grid.Rows)if(Convert.ToBoolean(row.Cells[0].Value)){
+    var pref=((ScreenPreference)row.Tag).Clone();string value=Convert.ToString(row.Cells[4].Value);pref.ScalePercent=value=="保持当前"?0:int.Parse(value.TrimEnd('%'));
+    pref.Rotation=Array.IndexOf(new[]{"保持当前","横屏","竖屏（右转）","横屏（反向）","竖屏（左转）"},Convert.ToString(row.Cells[5].Value));ResolutionSetting.Parse(Convert.ToString(row.Cells[7].Value),pref);p.Screens.Add(pref);
+   }
+   var main=primary.SelectedItem as ScreenChoice;if(main!=null)p.PrimaryId=main.Id;p.Validate();return p;
+  }
+  void PreviewProfile(DisplayProfile p){
+   ShowSettings();RefreshScreens(p);engine.BeginPreview(p,draftKnown,DateTime.UtcNow);next=DateTime.MinValue;Sync();
+  }
+  void Quick(bool all,bool legacyPanel){
+   var snapshot=backend.Query(true);var physical=snapshot.Monitors.Where(m=>MonitorIdentity.IsPhysical(m)&&m.Available).ToList();
+   if(physical.Count==0)throw new InvalidOperationException("当前没有可用物理显示器。");
+   var previous=config.Current.Screens.FirstOrDefault(p=>MonitorIdentity.Equal(p.Id,config.Current.PrimaryId));
+   var main=previous==null?null:MonitorIdentity.Resolve(previous,physical);
+   if(legacyPanel)main=physical.FirstOrDefault(m=>m.Internal)??main;
+   main=main??physical.FirstOrDefault(m=>m.Active&&m.X==0&&m.Y==0)??physical[0];
+   var profile=new DisplayProfile{Name=all?"全部屏幕":"仅所选主屏"};
+   foreach(var m in all?physical:new List<Monitor>{main}){var pref=ScreenPreference.From(m);var old=config.Current.Screens.FirstOrDefault(p=>MonitorIdentity.Resolve(p,new[]{m})!=null);
+    pref.ScalePercent=old==null?0:old.ScalePercent;if(old!=null){pref.ResolutionWidth=old.ResolutionWidth;pref.ResolutionHeight=old.ResolutionHeight;}profile.Screens.Add(pref);if(m.Key==main.Key)profile.PrimaryId=pref.Id;}
+   PreviewProfile(profile);
+  }
+  void SavePreset(){
+   if(engine.PreviewActive)throw new InvalidOperationException("请先保留或还原当前画面。");
+   string name=profileName.Text.Trim();var candidate=config.Clone();PresetLibrary.Save(candidate,Draft(),name);Storage.Save(candidate);config.Assign(candidate);LoadPresets(name);RememberEditor();RebuildMenu();
+   presetNotice.Text="已保存预设：“"+name+"”。载入可编辑，应用后确认才切换屏幕。";
+  }
+  void LoadPresets(string wanted=null){wanted=wanted??Convert.ToString(presets.SelectedItem);updating=true;presets.Items.Clear();foreach(var p in config.Saved)presets.Items.Add(p.Name);presets.SelectedIndex=-1;for(int i=0;i<presets.Items.Count;i++)if(MonitorIdentity.Equal(Convert.ToString(presets.Items[i]),wanted))presets.SelectedIndex=i;updating=false;}
+  void MarkEditorDirty(){if(updating||editorSaving||settings==null||settings.IsDisposed||engine.PreviewActive)return;editorDirty=true;editorDue=DateTime.UtcNow.AddMilliseconds(800);}
+  void RememberEditor(){
+   if(settings==null||settings.IsDisposed||editorSaving)return;editorSaving=true;
+   try{
+    grid.EndEdit();var memory=new EditorState{ProfileName=profileName.Text,PrimaryId=primary.SelectedItem is ScreenChoice?((ScreenChoice)primary.SelectedItem).Id:"",SelectedPreset=Convert.ToString(presets.SelectedItem),Maximized=settings.WindowState==FormWindowState.Maximized};
+    using(var graphics=settings.CreateGraphics()){var size=settings.WindowState==FormWindowState.Normal?settings.ClientSize:normalEditorSize;memory.WindowWidth=(int)Math.Round(size.Width*96.0/graphics.DpiX);memory.WindowHeight=(int)Math.Round(size.Height*96.0/graphics.DpiY);}
+    foreach(DataGridViewRow row in grid.Rows){var pref=((ScreenPreference)row.Tag).Clone();string scale=Convert.ToString(row.Cells[4].Value);pref.ScalePercent=scale=="保持当前"?0:int.Parse(scale.TrimEnd('%'));pref.Rotation=Array.IndexOf(new[]{"保持当前","横屏","竖屏（右转）","横屏（反向）","竖屏（左转）"},Convert.ToString(row.Cells[5].Value));memory.Rows.Add(new EditorScreen{Preference=pref,Selected=Convert.ToBoolean(row.Cells[0].Value),ResolutionText=Convert.ToString(row.Cells[7].Value)});}
+    var previous=config.Editor;config.Editor=memory;try{Storage.Save(config);}catch{config.Editor=previous;throw;}editorDirty=false;
+   }finally{editorSaving=false;}
+  }
+  void CaptureLayout(){
+   var p=Draft();var current=backend.Query(false);foreach(var pref in p.Screens){var m=MonitorIdentity.Resolve(pref,current.Monitors);if(m==null)throw new InvalidOperationException("请先在 Windows 中启用所有选中的屏幕，再记住布局。");pref.X=m.X;pref.Y=m.Y;pref.HasPosition=true;}
+   RefreshScreens(p);
+  }
+  void Identify(){
+   if(inventory==null)return;foreach(var m in inventory.Monitors.Where(m=>m.Active&&MonitorIdentity.IsPhysical(m))){
+    var label=new Form{FormBorderStyle=FormBorderStyle.None,TopMost=true,ShowInTaskbar=false,BackColor=Color.FromArgb(15,40,65),Size=new Size(300,100),StartPosition=FormStartPosition.Manual};
+    var screen=Screen.AllScreens.FirstOrDefault(x=>MonitorIdentity.Equal(x.DeviceName,m.GdiName));if(screen==null){label.Dispose();continue;}
+    label.Location=new Point(screen.Bounds.X+40,screen.Bounds.Y+40);label.Controls.Add(new Label{Text=m.Name,ForeColor=Color.White,Font=new Font("Microsoft YaHei UI",18,FontStyle.Bold),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleCenter});
+    var close=new System.Windows.Forms.Timer{Interval=2500};close.Tick+=(s,e)=>{close.Stop();label.Close();close.Dispose();};label.FormClosed+=(s,e)=>close.Dispose();label.Show();close.Start();
    }
   }
-  void ReportIfChanged(){if(status!=lastReport){lastReport=status;Report();}}
-  void SetMode(string m){config.Mode=m;config.Enabled=true;Storage.Save(config);pauseUntil=DateTime.MinValue;changes.Clear();scaleChanges.Clear();failures=0;nextPoll=DateTime.MinValue;lastApply=DateTime.MinValue;Schedule();SetStatus("准备切换模式…");Sync();Report();}
-  void Enable(){config.Enabled=true;Storage.Save(config);pauseUntil=DateTime.MinValue;changes.Clear();scaleChanges.Clear();nextPoll=DateTime.MinValue;Schedule();Sync();Report();}
-  void Pause(){pauseUntil=DateTime.UtcNow.AddMinutes(10);Storage.Log("用户暂停 10 分钟");Sync();Report();}
-  void Internal(){config.Enabled=false;Storage.Save(config);try{NativeDisplay.InternalOnly();SetStatus("守护已停用，已恢复笔记本屏幕");}catch(Exception e){SetStatus(e.Message);Storage.Log(e.Message);}Sync();Report();}
-  void OpenLog(){string p=Path.Combine(Storage.Root,"guard.log");if(File.Exists(p))Process.Start(new ProcessStartInfo("notepad.exe","\""+p+"\""){UseShellExecute=true});}
-  void Command(int command){switch(command){case 1:ShowSettings();break;case 2:SetMode("external");break;case 3:SetMode("extend");break;case 4:Pause();break;case 5:Enable();break;case 6:config.Enabled=false;Storage.Save(config);Sync();Report();break;case 7:Internal();break;case 8:ExitThread();break;}}
-  void Sync(){if(settings==null||settings.IsDisposed)return;updating=true;external.Checked=config.Mode=="external";extend.Checked=config.Mode=="extend";enabled.Checked=config.Enabled;startup.Checked=Storage.AutoStart;state.Text=status;if(scaleBox!=null)scaleBox.SelectedIndex=config.ExternalScalePercent==0?0:Array.IndexOf(NativeDisplay.ScaleSteps,config.ExternalScalePercent)+1;updating=false;}
-  void RefreshMonitors(){try{choices=NativeDisplay.Query(true).Monitors.Where(x=>x.External&&x.Available&&!string.IsNullOrEmpty(x.DevicePath)).ToList();updating=true;monitorBox.Items.Clear();foreach(var m in choices)monitorBox.Items.Add(m.Name+"  ["+m.GdiName+"]");monitorBox.SelectedIndex=choices.FindIndex(x=>string.Equals(x.DevicePath,config.TargetPath,StringComparison.OrdinalIgnoreCase));updating=false;}catch(Exception e){updating=false;SetStatus(e.Message);}}
+  Button Button(FlowLayoutPanel parent,string text,Action action){var b=new Button{Text=text,AutoSize=true,Margin=new Padding(4),Padding=new Padding(6,4,6,4)};b.Click+=(s,e)=>Safe(action);parent.Controls.Add(b);return b;}
   void ShowSettings(){
-   if(settings!=null&&!settings.IsDisposed){settings.Show();NativeDisplay.ShowWindow(settings.Handle,5);settings.Activate();RefreshMonitors();Sync();return;}
-   settings=new Form{Text="外接屏守护",Icon=windowIcon,ClientSize=new Size(570,485),StartPosition=FormStartPosition.CenterScreen,FormBorderStyle=FormBorderStyle.FixedDialog,MaximizeBox=false,Font=new Font("Microsoft YaHei UI",10),BackColor=Color.White};
-   settings.SuspendLayout();settings.AutoScaleMode=AutoScaleMode.Dpi;settings.AutoScaleDimensions=new SizeF(96,96);
-   settings.Controls.Add(new Label{Text="外接屏守护",Location=new Point(24,20),Size=new Size(510,34),Font=new Font("Microsoft YaHei UI",18,FontStyle.Bold)});
-   state=new Label{Location=new Point(26,65),AutoSize=true,MaximumSize=new Size(515,60),ForeColor=Color.FromArgb(30,90,140)};settings.Controls.Add(state);
-   enabled=new CheckBox{Text="自动保持所选显示模式",Location=new Point(26,126),AutoSize=true};settings.Controls.Add(enabled);
-   external=new RadioButton{Text="仅外接屏（默认）",Location=new Point(43,162),AutoSize=true};extend=new RadioButton{Text="双屏扩展，外接屏为主屏",Location=new Point(43,195),AutoSize=true};settings.Controls.Add(external);settings.Controls.Add(extend);
-   settings.Controls.Add(new Label{Text="仅外接屏缩放",Location=new Point(43,237),AutoSize=true});scaleBox=new ComboBox{Location=new Point(215,233),Size=new Size(212,30),DropDownStyle=ComboBoxStyle.DropDownList};scaleBox.Items.Add("保持当前缩放");foreach(int value in NativeDisplay.ScaleSteps)scaleBox.Items.Add(value+"%");settings.Controls.Add(scaleBox);
-   settings.Controls.Add(new Label{Text="固定的外接显示器",Location=new Point(26,284),AutoSize=true});monitorBox=new ComboBox{Location=new Point(26,312),Size=new Size(401,30),DropDownStyle=ComboBoxStyle.DropDownList};settings.Controls.Add(monitorBox);
-   var refresh=new Button{Text="刷新",Location=new Point(443,310),Size=new Size(96,32)};refresh.Click+=(s,e)=>RefreshMonitors();settings.Controls.Add(refresh);
-   startup=new CheckBox{Text="登录 Windows 后自动启动",Location=new Point(26,357),AutoSize=true};settings.Controls.Add(startup);
-   var pause=new Button{Text="暂停 10 分钟",Location=new Point(26,398),Size=new Size(140,36)};pause.Click+=(s,e)=>Pause();settings.Controls.Add(pause);
-   var restore=new Button{Text="停用并恢复笔记本屏",Location=new Point(178,398),Size=new Size(206,36)};restore.Click+=(s,e)=>Internal();settings.Controls.Add(restore);
-   var log=new Button{Text="查看日志",Location=new Point(397,398),Size=new Size(142,36)};log.Click+=(s,e)=>OpenLog();settings.Controls.Add(log);
-   settings.Controls.Add(new Label{Text="关闭此窗口后继续在托盘运行。拔掉外接屏时保留可用屏幕。",Location=new Point(26,450),Size=new Size(520,25),ForeColor=Color.DimGray,Font=new Font("Microsoft YaHei UI",9)});
-   enabled.CheckedChanged+=(s,e)=>{if(updating)return;config.Enabled=enabled.Checked;Storage.Save(config);if(config.Enabled)Enable();Sync();Report();};
-   external.CheckedChanged+=(s,e)=>{if(!updating&&external.Checked)SetMode("external");};extend.CheckedChanged+=(s,e)=>{if(!updating&&extend.Checked)SetMode("extend");};
-   startup.CheckedChanged+=(s,e)=>{if(!updating){Storage.Startup(startup.Checked);Report();}};
-   scaleBox.SelectedIndexChanged+=(s,e)=>{if(updating||scaleBox.SelectedIndex<0)return;config.ExternalScalePercent=scaleBox.SelectedIndex==0?0:NativeDisplay.ScaleSteps[scaleBox.SelectedIndex-1];Storage.Save(config);changes.Clear();scaleChanges.Clear();failures=0;nextPoll=DateTime.MinValue;Schedule();Report();};
-   monitorBox.SelectedIndexChanged+=(s,e)=>{if(updating||monitorBox.SelectedIndex<0)return;var m=choices[monitorBox.SelectedIndex];config.TargetPath=m.DevicePath;config.TargetName=m.Name;Storage.Save(config);Enable();};
-   Sync();RefreshMonitors();settings.ResumeLayout(true);settings.Show();NativeDisplay.ShowWindow(settings.Handle,5);settings.Activate();
+   if(settings!=null&&!settings.IsDisposed){settings.Show();NativeDisplay.ShowWindow(settings.Handle,5);settings.Activate();return;}
+   var memory=config.Editor;
+   settings=new Form{AutoScaleDimensions=new SizeF(96,96),AutoScaleMode=AutoScaleMode.Dpi,Text="屏幕守护 · 多屏组合",Icon=windowIcon,ClientSize=new Size(Math.Max(720,Math.Min(2400,memory.WindowWidth)),Math.Max(500,Math.Min(1600,memory.WindowHeight))),MinimumSize=new Size(720,500),StartPosition=FormStartPosition.CenterScreen,Font=new Font("Microsoft YaHei UI",10),BackColor=Color.White,AutoScroll=true};
+   settings.SuspendLayout();
+   var root=new TableLayoutPanel{Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=6,Padding=new Padding(16),Margin=Padding.Empty};root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
+   for(int row=0;row<6;row++)root.RowStyles.Add(new RowStyle(SizeType.AutoSize));settings.Controls.Add(root);
+   status=new Label{Text=engine.Status,AutoSize=true,MaximumSize=new Size(1000,0),ForeColor=Color.FromArgb(30,90,140),Margin=new Padding(0,5,0,10)};root.Controls.Add(status,0,0);
+   var top=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Fill};root.Controls.Add(top,0,1);
+   enabled=new CheckBox{Text="自动保持已应用组合",AutoSize=true,Margin=new Padding(4,12,20,4)};top.Controls.Add(enabled);
+   startup=new CheckBox{Text="登录后自动启动",AutoSize=true,Margin=new Padding(4,12,15,4)};top.Controls.Add(startup);
+   Button(top,"刷新屏幕",()=>{if(engine.PreviewActive)return;DisplayProfile draft=null;try{draft=Draft();}catch{}RefreshScreens(draft);});
+   Button(top,"识别已亮屏幕",Identify);
+   grid=new DataGridView{Dock=DockStyle.Fill,Height=250,MinimumSize=new Size(0,220),AllowUserToAddRows=false,AllowUserToDeleteRows=false,AllowUserToResizeRows=false,RowHeadersVisible=false,AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.Fill,AutoSizeRowsMode=DataGridViewAutoSizeRowsMode.AllCells,ColumnHeadersHeightSizeMode=DataGridViewColumnHeadersHeightSizeMode.AutoSize,BackgroundColor=Color.White,SelectionMode=DataGridViewSelectionMode.CellSelect,ScrollBars=ScrollBars.Both};grid.ColumnHeadersDefaultCellStyle.WrapMode=DataGridViewTriState.True;
+   grid.Columns.Add(new DataGridViewCheckBoxColumn{Name="Enabled",HeaderText="亮起",FillWeight=38});
+   grid.Columns.Add(new DataGridViewTextBoxColumn{Name="Name",HeaderText="显示器",ReadOnly=true,FillWeight=125});
+   grid.Columns.Add(new DataGridViewTextBoxColumn{Name="State",HeaderText="连接状态",ReadOnly=true,FillWeight=85});
+   grid.Columns.Add(new DataGridViewTextBoxColumn{Name="CurrentScale",HeaderText="当前缩放",ReadOnly=true,FillWeight=60});
+   var scale=new DataGridViewComboBoxColumn{Name="Scale",HeaderText="保持缩放",FillWeight=80};scale.Items.AddRange(ScaleLabels());grid.Columns.Add(scale);
+   var rotation=new DataGridViewComboBoxColumn{Name="Rotation",HeaderText="方向",FillWeight=85};rotation.Items.AddRange(new[]{"保持当前","横屏","竖屏（右转）","横屏（反向）","竖屏（左转）"});grid.Columns.Add(rotation);
+   grid.Columns.Add(new DataGridViewTextBoxColumn{Name="CurrentResolution",HeaderText="当前分辨率",ReadOnly=true,FillWeight=85});
+   var resolution=new DataGridViewTextBoxColumn{Name="Resolution",HeaderText="固定分辨率（宽×高）",FillWeight=105};resolution.HeaderCell.ToolTipText="例如 3840×2160 或 2560x1440；填写“保持当前”则不固定。由 Windows 验证是否支持。";grid.Columns.Add(resolution);root.Controls.Add(grid,0,2);
+   grid.CurrentCellDirtyStateChanged+=(s,e)=>{if(grid.IsCurrentCellDirty)grid.CommitEdit(DataGridViewDataErrorContexts.Commit);};
+   grid.CellValueChanged+=(s,e)=>{if(!updating&&e.ColumnIndex==0)UpdatePrimary(null);MarkEditorDirty();};grid.CellEndEdit+=(s,e)=>MarkEditorDirty();
+   grid.DataError+=(s,e)=>{e.ThrowException=false;};
+   var selection=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Fill};root.Controls.Add(selection,0,3);
+   selection.Controls.Add(new Label{Text="主屏",AutoSize=true,Margin=new Padding(4,14,4,4)});
+   primary=new ComboBox{Width=240,DropDownStyle=ComboBoxStyle.DropDownList,Margin=new Padding(4,8,10,4)};selection.Controls.Add(primary);
+   Button(selection,"全选",()=>{if(engine.PreviewActive)return;updating=true;foreach(DataGridViewRow row in grid.Rows)row.Cells[0].Value=true;updating=false;UpdatePrimary(null);});
+   Button(selection,"仅亮主屏",()=>{if(engine.PreviewActive)return;var selected=primary.SelectedItem as ScreenChoice;if(selected==null)return;updating=true;foreach(DataGridViewRow row in grid.Rows)row.Cells[0].Value=MonitorIdentity.Equal(((ScreenPreference)row.Tag).Id,selected.Id);updating=false;UpdatePrimary(selected.Id);});
+   Button(selection,"固定当前分辨率",()=>{if(engine.PreviewActive)return;grid.EndEdit();var snapshot=backend.Query(false);foreach(DataGridViewRow row in grid.Rows)if(Convert.ToBoolean(row.Cells[0].Value)){var m=MonitorIdentity.Resolve((ScreenPreference)row.Tag,snapshot.Monitors);if(m!=null&&m.Width>0&&m.Height>0)row.Cells[7].Value=ResolutionSetting.Format((int)m.Width,(int)m.Height);}});
+   Button(selection,"记住当前布局",CaptureLayout);apply=Button(selection,"应用选择",()=>{engine.BeginPreview(Draft(),draftKnown,DateTime.UtcNow);Sync();});
+   var saved=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Fill};root.Controls.Add(saved,0,4);
+   saved.Controls.Add(new Label{Text="组合名称",AutoSize=true,Margin=new Padding(4,14,4,4)});profileName=new TextBox{Width=160,Margin=new Padding(4,8,8,4)};saved.Controls.Add(profileName);
+   Button(saved,"保存当前选择为预设",SavePreset);presets=new ComboBox{Width=180,DropDownStyle=ComboBoxStyle.DropDownList,Margin=new Padding(4,8,4,4)};saved.Controls.Add(presets);
+   Button(saved,"载入预设",()=>{if(!engine.PreviewActive&&presets.SelectedIndex>=0)RefreshScreens(PresetLibrary.Load(config,Convert.ToString(presets.SelectedItem)));});
+   Button(saved,"应用预设",()=>{if(!engine.PreviewActive&&presets.SelectedIndex>=0)PreviewProfile(PresetLibrary.Load(config,Convert.ToString(presets.SelectedItem)));});
+   Button(saved,"删除预设",()=>{if(engine.PreviewActive||presets.SelectedIndex<0)return;var candidate=config.Clone();candidate.Saved.RemoveAt(presets.SelectedIndex);Storage.Save(candidate);config.Assign(candidate);LoadPresets();RememberEditor();RebuildMenu();});
+   presetNotice=new Label{Text="编辑会自动记住；应用并确认后才守护新组合。",AutoSize=true,MaximumSize=new Size(420,0),ForeColor=Color.FromArgb(30,90,140),Margin=new Padding(4,14,4,4)};saved.Controls.Add(presetNotice);
+   var bottom=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Fill};root.Controls.Add(bottom,0,5);
+   preview=new Label{AutoSize=true,ForeColor=Color.FromArgb(160,75,10),Margin=new Padding(4,14,4,4)};bottom.Controls.Add(preview);
+   confirm=Button(bottom,"保留画面",()=>{engine.ConfirmPreview(DateTime.UtcNow);RefreshScreens(config.Current.Clone());Sync();});
+   cancel=Button(bottom,"还原",()=>{engine.CancelPreview();RefreshScreens(config.Current.Clone());Sync();});
+   Button(bottom,"暂停 10 分钟",()=>{engine.Pause(DateTime.UtcNow);Sync();});Button(bottom,"查看日志",OpenLog);
+   enabled.CheckedChanged+=(s,e)=>{if(updating)return;Safe(()=>{if(enabled.Checked){if(config.Current.Screens.Count==0&&config.Legacy==null)throw new InvalidOperationException("请先选择屏幕并应用。");engine.Enable();next=DateTime.MinValue;}else engine.Disable();Sync();});};
+   startup.CheckedChanged+=(s,e)=>{if(!updating)Safe(()=>Storage.Startup(startup.Checked));};
+   profileName.TextChanged+=(s,e)=>MarkEditorDirty();primary.SelectedIndexChanged+=(s,e)=>MarkEditorDirty();presets.SelectedIndexChanged+=(s,e)=>MarkEditorDirty();settings.ResizeEnd+=(s,e)=>{if(!engine.PreviewActive)Safe(RememberEditor);};
+   root.SizeChanged+=(s,e)=>status.MaximumSize=new Size(Math.Max(200,root.ClientSize.Width-root.Padding.Horizontal),0);
+   settings.ClientSizeChanged+=(s,e)=>{if(settings.WindowState==FormWindowState.Normal)normalEditorSize=settings.ClientSize;};
+   settings.FormClosing+=(s,e)=>{if(engine.PreviewActive)engine.CancelPreview();try{RememberEditor();}catch(Exception error){Storage.Log("关闭设置前保存失败："+error.Message);}};
+   settings.Shown+=(s,e)=>{
+    var area=Screen.FromControl(settings).WorkingArea;int width=Math.Max(300,area.Width-20),height=Math.Max(250,area.Height-20);
+    using(var graphics=settings.CreateGraphics()){settings.MinimumSize=new Size(Math.Min((int)(720*graphics.DpiX/96),width),Math.Min((int)(500*graphics.DpiY/96),height));settings.ClientSize=new Size((int)(Math.Max(720,Math.Min(2400,memory.WindowWidth))*graphics.DpiX/96),(int)(Math.Max(500,Math.Min(1600,memory.WindowHeight))*graphics.DpiY/96));grid.MinimumSize=new Size(0,grid.Font.Height*6);grid.Height=Math.Max(grid.Font.Height*7,(int)(250*graphics.DpiY/96));}
+    settings.Size=new Size(Math.Min(settings.Width,width),Math.Min(settings.Height,height));settings.Location=new Point(area.Left+(area.Width-settings.Width)/2,area.Top+(area.Height-settings.Height)/2);normalEditorSize=settings.ClientSize;
+    int padding=Math.Max(3,grid.Font.Height/6);grid.DefaultCellStyle.Padding=new Padding(padding);grid.ColumnHeadersDefaultCellStyle.Padding=new Padding(padding);grid.RowTemplate.MinimumHeight=grid.Font.Height+padding*2+6;foreach(DataGridViewColumn column in grid.Columns)column.MinimumWidth=Math.Max(45,grid.Font.Height*(column.Index==0?2:4));foreach(FlowLayoutPanel flow in root.Controls.OfType<FlowLayoutPanel>()){flow.AutoSizeMode=AutoSizeMode.GrowAndShrink;flow.WrapContents=true;}if(memory.Maximized)settings.WindowState=FormWindowState.Maximized;
+   };
+   LoadPresets(memory.SelectedPreset);RefreshScreens(null,true);settings.ResumeLayout(true);settings.Show();NativeDisplay.ShowWindow(settings.Handle,memory.Maximized?3:5);settings.Activate();Sync();
   }
-  protected override void ExitThreadCore(){Storage.Log("退出");timer.Stop();timer.Dispose();SystemEvents.PowerModeChanged-=Power;SystemEvents.SessionSwitch-=Session;if(settings!=null&&!settings.IsDisposed)settings.Close();tray.Visible=false;tray.Dispose();trayIcon.Dispose();windowIcon.Dispose();receiver.Dispose();base.ExitThreadCore();}
+  void OpenLog(){var path=Path.Combine(Storage.Root,"guard.log");if(File.Exists(path))Process.Start(new ProcessStartInfo("notepad.exe","\""+path+"\""){UseShellExecute=true});}
+  public void Command(int command){switch(command){case 1:ShowSettings();break;case 2:Quick(false,false);break;case 3:Quick(true,false);break;case 4:engine.Pause(DateTime.UtcNow);break;case 5:engine.Enable();next=DateTime.MinValue;break;case 6:engine.Disable();break;case 7:Quick(false,true);break;case 8:ExitThread();break;}Sync();}
+  protected override void ExitThreadCore(){if(engine.PreviewActive)engine.CancelPreview();try{RememberEditor();}catch(Exception e){Storage.Log("退出前界面保存失败："+e.Message);}timer.Stop();timer.Dispose();SystemEvents.PowerModeChanged-=Power;SystemEvents.SessionSwitch-=Session;if(settings!=null&&!settings.IsDisposed)settings.Close();tray.Visible=false;tray.Dispose();trayIcon.Dispose();windowIcon.Dispose();receiver.Dispose();Storage.Log("退出");base.ExitThreadCore();}
  }
  static class Program {
-  public static uint MessageId=NativeDisplay.RegisterWindowMessage("ExternalDisplayGuard.Command.v1");
   [STAThread] static int Main(string[] args){
+   // Offline checks run before any UI, message registration, configuration load or real display backend.
+   if(args.Length==2&&(args[0]=="--self-test"||args[0]=="--offline-tests"))return OfflineChecks.Run(args[1]);
    Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
    try{
-    if(args.Length>=2&&args[0]=="--diagnose"){Storage.Write(args[1],new{Time=DateTimeOffset.Now.ToString("o"),Config=Storage.Load(),Active=NativeDisplay.Query(false).Monitors,All=NativeDisplay.Query(true).Monitors,Screens=Screen.AllScreens.Select(s=>new{s.DeviceName,s.Primary,Bounds=s.Bounds.ToString()}).ToArray(),StructSizes=new{Path=Marshal.SizeOf(typeof(DisplayPath)),Mode=Marshal.SizeOf(typeof(Mode)),TargetName=Marshal.SizeOf(typeof(TargetName))}});return 0;}
-    if(args.Length>=2&&args[0]=="--self-test"){SelfTest.Run(args[1]);return 0;}
-    int command=0;if(args.Length>0){switch(args[0]){case "--settings":command=1;break;case "--external":command=2;break;case "--extend":command=3;break;case "--pause":command=4;break;case "--enable":command=5;break;case "--disable":command=6;break;case "--internal":command=7;break;case "--stop":command=8;break;default:throw new ArgumentException("未知参数："+args[0]);}}
+    if(args.Length==2&&args[0]=="--diagnose"){Storage.Write(args[1],new{Time=DateTimeOffset.Now.ToString("o"),Config=Storage.Load(),Active=NativeDisplay.Query(false).Monitors,All=NativeDisplay.Query(true).Monitors});return 0;}
+    int command=0;if(args.Length>0){switch(args[0]){case "--settings":command=1;break;case "--single":case "--external":command=2;break;case "--all":case "--extend":command=3;break;case "--pause":command=4;break;case "--enable":command=5;break;case "--disable":command=6;break;case "--internal":command=7;break;case "--stop":command=8;break;case "--background":command=9;break;default:throw new ArgumentException("未知参数："+args[0]);}}
     bool first;using(var mutex=new Mutex(true,"Local\\ExternalDisplayGuard.v1",out first)){
      if(!first){
-      if(command==0)command=1;
-      IntPtr window=IntPtr.Zero;for(int attempt=0;attempt<30&&window==IntPtr.Zero;attempt++){window=NativeDisplay.FindWindow(null,"ExternalDisplayGuard.Events");if(window==IntPtr.Zero)Thread.Sleep(100);}
-      if(window==IntPtr.Zero||!NativeDisplay.PostMessage(window,MessageId,new IntPtr(command),IntPtr.Zero))throw new InvalidOperationException("运行中的守护程序未响应，请从托盘退出后重试。");
-      return 0;
+      if(command==0)command=1;IntPtr window=IntPtr.Zero;for(int attempt=0;attempt<30&&window==IntPtr.Zero;attempt++){window=NativeDisplay.FindWindow(null,"ExternalDisplayGuard.Events.v2");if(window==IntPtr.Zero)Thread.Sleep(100);}
+      if(window==IntPtr.Zero){if(command==8){var old=NativeDisplay.FindWindow(null,"ExternalDisplayGuard.Events");if(old!=IntPtr.Zero){NativeDisplay.PostMessage(old,NativeDisplay.RegisterWindowMessage("ExternalDisplayGuard.Command.v1"),new IntPtr(8),IntPtr.Zero);return 0;}}throw new InvalidOperationException("旧版本仍在运行，请先从托盘退出旧版本，或使用更新脚本。");}
+      if(!NativeDisplay.PostMessage(window,NativeDisplay.RegisterWindowMessage("ExternalDisplayGuard.Command.v2"),new IntPtr(command),IntPtr.Zero))throw new InvalidOperationException("运行中的程序未响应。");return 0;
      }
-     if(command==8)return 0;var c=Storage.Load();if(command==2||command==3){c.Mode=command==2?"external":"extend";c.Enabled=true;Storage.Save(c);}if(command==6){c.Enabled=false;Storage.Save(c);}if(command==7){c.Enabled=false;Storage.Save(c);NativeDisplay.InternalOnly();return 0;}
-     using(var app=new Guard(c)){if(command==1||command==4||command==5)NativeDisplay.PostMessage(new IntPtr(0xffff),MessageId,new IntPtr(command),IntPtr.Zero);Application.Run(app);}mutex.ReleaseMutex();
+     if(command==8)return 0;var c=Storage.Load();if(command==6)c.Enabled=false;
+     using(var app=new Guard(c)){if(command==0)app.Command(1);else if(command!=9)app.Command(command);Application.Run(app);}mutex.ReleaseMutex();
     }return 0;
-   }catch(Exception e){Storage.Log("致命错误："+e);if(args.Length>=2&&(args[0]=="--diagnose"||args[0]=="--self-test")){Storage.Write(args[1],new{Error=e.ToString()});return 1;}MessageBox.Show(e.Message,"外接屏守护",MessageBoxButtons.OK,MessageBoxIcon.Error);return 1;}
+   }catch(Exception e){Storage.Log(e.ToString());if(args.Length==2&&args[0]=="--diagnose"){Storage.Write(args[1],new{Error=e.ToString()});return 1;}MessageBox.Show(e.Message,"屏幕守护",MessageBoxButtons.OK,MessageBoxIcon.Error);return 1;}
   }
  }
 }

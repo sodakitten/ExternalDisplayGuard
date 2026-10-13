@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.1.0-beta.3
+
+- Automatically size grid headers and rows to text, give lower sections content-sized rows, and scroll settings on small/high-DPI desktops.
+- Save the current draft as a named preset before applying; load or apply presets explicitly, with independent copies and safe same-name replacement.
+- Remember editor checkbox states, unchecked-screen parameters, raw resolution text, primary, names, selected preset and window size across exits/restarts.
+- Preserve the confirmed guard profile separately; unfinished/unconfirmed drafts never switch displays automatically.
+- Show remembered settings on manual launch; use --background for new login startup entries.
+- Validate state persistence and preset behavior with offline fake-backend checks; no new GUI or live display tests.
+
+## v1.1.0-beta.2
+
+- Lock each selected monitor to its own desktop resolution and restore game/driver drift alongside scaling.
+- Enter width × height, keep the current resolution unlocked, or capture selected active monitors' current dimensions.
+- Persist dimensions in profiles, support inactive targets and portrait dimensions, and arrange layouts using new sizes.
+- Validate exact requests without silent source-mode substitution, verify actual dimensions and roll back rejected/unsupported modes.
+- Retain portable directory storage; compile and use offline simulated checks only.
+
+## v1.1.0-beta.1
+
+- Support portable mode with a `portable.flag` next to the EXE; keep configuration and logs in the application directory without automatic installation or startup registration.
+- Select any nonempty subset of connected physical monitors, on desktops or laptops.
+- Choose any selected display as primary, with independent scaling, rotation and saved layout.
+- Add named presets, tray shortcuts, a 15-second preview confirmation, and automatic rollback.
+- Handle missing selected monitors and preferred-primary reconnection without overwriting the desired profile.
+- Pause on unknown new monitors, remote sessions and active virtual displays.
+- Migrate v1 configuration and preserve the original selected monitor and scale.
+- Verify with an isolated fake backend; no real display or UI tests were run for this beta.
+- Leave the previously installed stable application untouched during development.
+
 ## v1.0.0
 
 - Keep one selected physical external monitor active, or use an extended laptop/external desktop with the external monitor as primary.

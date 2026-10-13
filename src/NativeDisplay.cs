@@ -16,6 +16,7 @@ namespace ExternalDisplayGuard {
   [FieldOffset(16)] public ulong U0; [FieldOffset(24)] public ulong U1; [FieldOffset(32)] public ulong U2;
   [FieldOffset(40)] public ulong U3; [FieldOffset(48)] public ulong U4; [FieldOffset(56)] public ulong U5;
   [FieldOffset(16)] public uint Width; [FieldOffset(20)] public uint Height;
+  [FieldOffset(24)] public uint PixelFormat;
   [FieldOffset(28)] public int X; [FieldOffset(32)] public int Y;
  }
  [StructLayout(LayoutKind.Sequential)] public struct DeviceHeader { public uint Type, Size; public Luid Adapter; public uint Id; }
@@ -31,10 +32,11 @@ namespace ExternalDisplayGuard {
   public DeviceHeader Header; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string GdiName;
  }
  public class Monitor {
-  public string Key, Name, DevicePath, GdiName; public int Technology; public bool Active, Available, Internal, External;
+  public string Key, Name, DevicePath, GdiName,StableId,Fingerprint,Model; public int Technology,Rotation; public bool Active, Available, Internal, External;
   public uint Width, Height; public int X, Y, ScalePercent; public double RefreshHz;
+  public Monitor Clone(){return (Monitor)MemberwiseClone();}
  }
- public class Snapshot { public DisplayPath[] Paths; public Mode[] Modes; public List<Monitor> Monitors; }
+ public class Snapshot { public DisplayPath[] Paths; public Mode[] Modes; public List<Monitor> Monitors; public List<Monitor> Connections; }
  public static class NativeDisplay {
   [DllImport("user32.dll")] static extern int GetDisplayConfigBufferSizes(uint flags, out uint paths, out uint modes);
   [DllImport("user32.dll")] static extern int QueryDisplayConfig(uint flags, ref uint paths, [Out] DisplayPath[] pathArray, ref uint modes, [Out] Mode[] modeArray, IntPtr topology);
@@ -67,12 +69,12 @@ namespace ExternalDisplayGuard {
      int ne=GetTargetName(ref n);
      var sn=new SourceName();sn.Header=new DeviceHeader{Type=1,Size=(uint)Marshal.SizeOf(typeof(SourceName)),Adapter=p.Source.Adapter,Id=p.Source.Id};GetSourceName(ref sn);
      var m=new Monitor {Key=Key(p),Name=ne==0?n.Friendly:"未知显示器",DevicePath=ne==0?n.DevicePath:"",GdiName=sn.GdiName,
-      Technology=p.Target.Technology,Active=group.Any(x=>(x.Flags&1)!=0),Available=group.Any(x=>x.Target.Available!=0),Internal=IsInternal(p.Target.Technology),External=IsExternal(p.Target.Technology),
+      Technology=p.Target.Technology,Rotation=(int)p.Target.Rotation,Model=ne==0?n.Manufacturer.ToString("X4")+":"+n.Product.ToString("X4"):"",Active=group.Any(x=>(x.Flags&1)!=0),Available=group.Any(x=>x.Target.Available!=0),Internal=IsInternal(p.Target.Technology),External=IsExternal(p.Target.Technology),
       RefreshHz=p.Target.Refresh.Denominator==0?0:(double)p.Target.Refresh.Numerator/p.Target.Refresh.Denominator};
      if((p.Flags&1)!=0&&p.Source.ModeIndex<modes.Length){var mode=modes[p.Source.ModeIndex];if(mode.Type==1&&mode.Id==p.Source.Id&&mode.Adapter.ToString()==p.Source.Adapter.ToString()){m.Width=mode.Width;m.Height=mode.Height;m.X=mode.X;m.Y=mode.Y;}}
      if(m.Active&&m.Available){try{m.ScalePercent=ReadScale(s,m).CurrentPercent;}catch{m.ScalePercent=0;}}
      s.Monitors.Add(m);
-    } return s;
+    } HardwareIdentity.Enrich(s.Monitors);return s;
    }throw new InvalidOperationException("显示配置持续变化，请稍后重试。");
   }
   public static Monitor FindTarget(Snapshot s,string devicePath){
@@ -141,10 +143,12 @@ namespace ExternalDisplayGuard {
     modes[id].X-=dx;modes[id].Y-=dy;
    }return modes;
   }
-  static void ApplyPaths(DisplayPath[] paths,Mode[] modes){
+  public static void ApplyPaths(DisplayPath[] paths,Mode[] modes,bool allowChanges=true){
    uint count=modes==null?0u:(uint)modes.Length;
-   Check(SetDisplayConfig((uint)paths.Length,paths,count,modes,0x20|0x40|0x400),"验证显示配置");
-   Check(SetDisplayConfig((uint)paths.Length,paths,count,modes,0x20|0x80|0x200|0x400),"应用显示配置");
+   if(count==0)modes=null;
+   uint adjust=allowChanges?0x400u:0u;
+   Check(SetDisplayConfig((uint)paths.Length,paths,count,modes,0x20|0x40|adjust),"验证显示配置");
+   Check(SetDisplayConfig((uint)paths.Length,paths,count,modes,0x20|0x80|0x200|adjust),"应用显示配置");
   }
   public static void Apply(Snapshot s,Monitor target,string mode){
    var paths=Choose(s,target,mode=="extend");

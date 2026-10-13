@@ -21,11 +21,11 @@ if (Test-Path -LiteralPath $runKey) {
     if ($LASTEXITCODE -ne 0) { throw 'Could not back up login startup settings. Installation stopped.' }
 }
 if (-not (Test-Path -LiteralPath $runKey)) { New-Item -Path $runKey | Out-Null }
-New-ItemProperty -Path $runKey -Name ExternalDisplayGuard -Value ('"' + $destinationExe + '"') -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $runKey -Name ExternalDisplayGuard -Value ('"' + $destinationExe + '" --background') -PropertyType String -Force | Out-Null
 $shell = New-Object -ComObject WScript.Shell
 $shortcutRoot = Join-Path ([Environment]::GetFolderPath('Programs')) 'ExternalDisplayGuard'
 New-Item -ItemType Directory -Path $shortcutRoot -Force | Out-Null
-foreach ($item in @(@{Name='外接屏守护';Args='--settings'},@{Name='仅外接屏';Args='--external'},@{Name='双屏扩展';Args='--extend'},@{Name='停用守护并恢复笔记本屏';Args='--internal'})) {
+foreach ($item in @(@{Name='屏幕守护';Args='--settings'},@{Name='仅所选主屏';Args='--single'},@{Name='全部屏幕扩展';Args='--all'},@{Name='停用屏幕守护';Args='--disable'})) {
     $shortcut = $shell.CreateShortcut((Join-Path $shortcutRoot ($item.Name + '.lnk')))
     $shortcut.TargetPath = $destinationExe
     $shortcut.Arguments = $item.Args

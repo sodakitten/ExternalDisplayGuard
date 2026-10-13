@@ -1,16 +1,39 @@
 # Validation
 
-Tested on Windows 11 x64, build 26300, using a laptop panel and one HDMI external monitor.
+## v1.1.0-beta.3
 
-- Native Win32 structure layouts and topology policies pass automated checks.
-- Embedded icons load at 16, 32, 48 and 256 pixels.
-- External-only and independent extended desktops work, with the external monitor at the primary origin.
-- External resolution and refresh rate remain 3840 × 2160 at approximately 160 Hz during the tested switches.
-- Injecting an extended desktop and 175% external scaling is corrected to external-only and 200% in approximately three seconds.
-- Scaling changes are respected while paused and in extended mode.
-- Laptop panel scaling remains unchanged during the tested external scaling corrections.
-- Updating the installed application preserves configuration and existing login startup entries.
+All 477 offline checks passed, and the EXE compiled with warnings treated as errors. New checks cover saving an unapplied draft, same-name replacement, invalid-save preservation, independent preset/editor copies, remembered checked and unchecked screens, primary, names, selected preset, raw unfinished resolution text, logical window size, config defaults and persistence. A fake restart confirms that unfinished editor choices cannot become the active guard profile.
 
-The live verification scripts change real display settings. They are intended for an interactive local desktop with one connected external screen, and finish in external-only mode. `--self-test` only checks code and resource behavior and does not change display settings.
+UI changes use automatic header/row sizing and a content-sized scrollable layout. The new GUI was not opened and no real displays were enumerated or switched for verification, per user request. Actual high-DPI rendering, text fit, wrapping and scrolling remain unverified; the supplied screenshot is evidence of the previous clipping issue, not a validation of this fix. Updating the portable binary preserves the user's configuration and backs up the previous EXE.
 
-Physical unplug/replug, lid changes, suspend/resume, actual next login, different graphics drivers and long-term operation have not been comprehensively tested. DPI scaling uses undocumented Windows packet types and may need updates after an OS change.
+## v1.1.0-beta.2
+
+Compilation uses warnings as errors. All 459 offline checks passed. Additional coverage includes independent 4K / 1440p / portrait dimensions, all nonempty three/four-screen subsets with fixed dimensions, game-like drift, unsupported or silently substituted dimensions, confirm/cancel/timeout, inactive targets, target-timing invalidation, native source positions with changed dimensions, non-GDI pixel-format normalization, parsing and config persistence. Old profiles remain unlocked. These synthetic results do not establish hardware support.
+
+The new EXE, GUI and native display backend were not run during this change; no live monitor enumeration or display switching was used for testing. The portable EXE is updated after the user exits the old process, while retaining configuration and backing up the prior binary.
+
+## v1.1.0-beta.1
+
+Development followed the requirement not to test on the user's desktop. The installed v1.0.0 EXE, configuration, startup entries and real display modes were not changed. The new GUI, installer, updater, uninstaller and real monitor backend were not run.
+
+Validation consists of compilation and an isolated console runner using FakeDisplayBackend. It does not load application storage, register windows, enumerate WMI, call native display APIs or change the desktop. All monitor names, paths, identities and modes in the tests are synthetic.
+
+Coverage includes:
+
+- Every nonempty subset for three and four monitors, with every eligible primary choice: 12 three-monitor / primary variants and 32 four-monitor / primary variants, each on desktop and laptop fixtures.
+- Exact enabled sets, distinct adapter/source assignments, primary origin, per-monitor scale and no repeated mutation for a matching state.
+- Missing primary, fallback monitor, reconnection, retained desired profile, unknown monitor pause, remote and active virtual-display pause.
+- Gaps, overlaps, valid vertical layouts, portrait rotation, limited source capacity, multiple adapters and unused mode removal.
+- Partial driver failure, incomplete driver results, failed rollback cooldown, unsupported scale and persistent warning state.
+- Preview confirmation, timeout, cancellation, late confirmation, unexpected deactivation, offline-only selections and save failure recovery.
+- Safe first install, legacy migration, disabled-state preservation, configuration round trips and isolated profile copies.
+
+Run `test-offline.ps1` for a JSON report in the ignored `evidence` folder. Real three/four-monitor behavior, native path validation, drivers, docking stations, UI layout, per-monitor DPI, hotplug, next login, suspend/resume and long-term operation remain unverified.
+
+## Later portable packaging
+
+The portable storage switch was compiled with warnings treated as errors; the new application was not launched. At the user's later request, the old installation was backed up, stopped and removed along with its login startup value and known shortcuts, using the current uninstaller's display-preserving behavior. Eight other login startup values were checked unchanged. The old configuration, including its 200% scale preference, was copied to the portable directory. No native monitor tests or display-mode switches were performed as part of this migration.
+
+## Historical v1.0.0
+
+The previous single-external / laptop-two-display version had actual local desktop checks on Windows 11 build 26300. Those historical results do not validate the new multi-monitor backend or new UI.

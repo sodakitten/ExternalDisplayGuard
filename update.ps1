@@ -22,7 +22,12 @@ try {
     [Reflection.Assembly]::LoadFrom($appExe) | Out-Null
     $config = [ExternalDisplayGuard.Storage]::Load()
     [ExternalDisplayGuard.Storage]::Save($config)
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Destination $appRoot -Force
+    foreach ($supportName in @('README.md','uninstall.ps1')) {
+        $supportPath = Join-Path $PSScriptRoot $supportName
+        if ([IO.Path]::GetFullPath($supportPath) -ne [IO.Path]::GetFullPath((Join-Path $appRoot $supportName))) {
+            Copy-Item -LiteralPath $supportPath -Destination $appRoot -Force
+        }
+    }
 } catch {
     Copy-Item -LiteralPath (Join-Path $backupRoot 'ExternalDisplayGuard.exe') -Destination $appExe -Force
     if (Test-Path -LiteralPath (Join-Path $backupRoot 'config.json')) { Copy-Item -LiteralPath (Join-Path $backupRoot 'config.json') -Destination $configPath -Force }
@@ -32,10 +37,14 @@ try {
 Start-Process -FilePath $appExe -WindowStyle Hidden
 $shortcutRoot = Join-Path ([Environment]::GetFolderPath('Programs')) 'ExternalDisplayGuard'
 $shell = New-Object -ComObject WScript.Shell
-foreach ($name in @('外接屏守护','仅外接屏','双屏扩展','停用守护并恢复笔记本屏')) {
+foreach ($name in @('屏幕守护','仅所选主屏','全部屏幕扩展','停用屏幕守护')) {
     $path = Join-Path $shortcutRoot ($name + '.lnk')
     if (Test-Path -LiteralPath $path) { $shortcut = $shell.CreateShortcut($path); $shortcut.IconLocation = $appExe + ',0'; $shortcut.Save() }
 }
+$shortcuts=@(@{Name='屏幕守护';Args='--settings'},@{Name='仅所选主屏';Args='--single'},@{Name='全部屏幕扩展';Args='--all'},@{Name='停用屏幕守护';Args='--disable'})
+New-Item -ItemType Directory -Path $shortcutRoot -Force | Out-Null
+foreach($item in $shortcuts){$path=Join-Path $shortcutRoot ($item.Name+'.lnk');$shortcut=$shell.CreateShortcut($path);$shortcut.TargetPath=$appExe;$shortcut.Arguments=$item.Args;$shortcut.WorkingDirectory=$appRoot;$shortcut.IconLocation=$appExe+',0';$shortcut.Save()}
+foreach($oldName in @('外接屏守护','仅外接屏','双屏扩展','停用守护并恢复笔记本屏')){$oldPath=Join-Path $shortcutRoot ($oldName+'.lnk');if(Test-Path -LiteralPath $oldPath){Remove-Item -LiteralPath $oldPath}}
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -47,4 +56,4 @@ public static class DisplayGuardShellRefresh {
 $runKey = Get-Item -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $changed = @($startupBefore.Keys | Where-Object { $runKey.GetValue($_) -ne $startupBefore[$_] })
 if ($changed.Count -gt 0 -or $runKey.GetValueNames().Count -ne $startupBefore.Count) { throw 'Startup settings unexpectedly changed.' }
-[pscustomobject]@{Updated=$appExe;Backup=$backupRoot;StartupValuesPreserved=$startupBefore.Count;ExternalScalePercent=$config.ExternalScalePercent} | ConvertTo-Json
+[pscustomobject]@{Updated=$appExe;Backup=$backupRoot;StartupValuesPreserved=$startupBefore.Count;SchemaVersion=$config.SchemaVersion;Profile=$config.Current.Name} | ConvertTo-Json
