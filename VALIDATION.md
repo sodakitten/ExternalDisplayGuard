@@ -1,5 +1,11 @@
 # Validation
 
+## v1.1.0-beta.3
+
+All 477 offline checks passed, and the EXE compiled with warnings treated as errors. New checks cover saving an unapplied draft, same-name replacement, invalid-save preservation, independent preset/editor copies, remembered checked and unchecked screens, primary, names, selected preset, raw unfinished resolution text, logical window size, config defaults and persistence. A fake restart confirms that unfinished editor choices cannot become the active guard profile.
+
+UI changes use automatic header/row sizing and a content-sized scrollable layout. The new GUI was not opened and no real displays were enumerated or switched for verification, per user request. Actual high-DPI rendering, text fit, wrapping and scrolling remain unverified; the supplied screenshot is evidence of the previous clipping issue, not a validation of this fix. Updating the portable binary preserves the user's configuration and backs up the previous EXE.
+
 ## v1.1.0-beta.2
 
 Compilation uses warnings as errors. All 459 offline checks passed. Additional coverage includes independent 4K / 1440p / portrait dimensions, all nonempty three/four-screen subsets with fixed dimensions, game-like drift, unsupported or silently substituted dimensions, confirm/cancel/timeout, inactive targets, target-timing invalidation, native source positions with changed dimensions, non-GDI pixel-format normalization, parsing and config persistence. Old profiles remain unlocked. These synthetic results do not establish hardware support.

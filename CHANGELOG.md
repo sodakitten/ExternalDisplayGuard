@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.0-beta.3
+
+- Automatically size grid headers and rows to text, give lower sections content-sized rows, and scroll settings on small/high-DPI desktops.
+- Save the current draft as a named preset before applying; load or apply presets explicitly, with independent copies and safe same-name replacement.
+- Remember editor checkbox states, unchecked-screen parameters, raw resolution text, primary, names, selected preset and window size across exits/restarts.
+- Preserve the confirmed guard profile separately; unfinished/unconfirmed drafts never switch displays automatically.
+- Show remembered settings on manual launch; use --background for new login startup entries.
+- Validate state persistence and preset behavior with offline fake-backend checks; no new GUI or live display tests.
+
 ## v1.1.0-beta.2
 
 - Lock each selected monitor to its own desktop resolution and restore game/driver drift alongside scaling.

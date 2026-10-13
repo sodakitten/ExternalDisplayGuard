@@ -34,10 +34,26 @@ namespace ExternalDisplayGuard {
   }
  }
  public class LegacyConfig {public bool Enabled=true;public string Mode="external",TargetPath="",TargetName="";public int ExternalScalePercent=200;}
+ public class EditorScreen {
+  public ScreenPreference Preference=new ScreenPreference();public bool Selected;public string ResolutionText="保持当前";
+  public EditorScreen Clone(){return new EditorScreen{Preference=Preference.Clone(),Selected=Selected,ResolutionText=ResolutionText};}
+ }
+ public class EditorState {
+  public List<EditorScreen> Rows=new List<EditorScreen>();public string PrimaryId="",ProfileName="当前选择",SelectedPreset="";public int WindowWidth=1120,WindowHeight=640;public bool Maximized;
+  public EditorState Clone(){return new EditorState{Rows=Rows.Where(x=>x!=null&&x.Preference!=null).Select(x=>x.Clone()).ToList(),PrimaryId=PrimaryId,ProfileName=ProfileName,SelectedPreset=SelectedPreset,WindowWidth=WindowWidth,WindowHeight=WindowHeight,Maximized=Maximized};}
+ }
+ public static class PresetLibrary {
+  public static void Save(Config config,DisplayProfile draft,string name){
+   name=(name??"").Trim();if(name.Length==0)throw new InvalidOperationException("请输入预设名称。");draft.Validate();var copy=draft.Clone();copy.Name=name;
+   config.Saved.RemoveAll(x=>MonitorIdentity.Equal(x.Name,name));config.Saved.Add(copy);
+  }
+  public static DisplayProfile Load(Config config,string name){var p=config.Saved.FirstOrDefault(x=>MonitorIdentity.Equal(x.Name,name));if(p==null)throw new InvalidOperationException("预设不存在。");return p.Clone();}
+ }
  public class Config {
   public int SchemaVersion=2;public bool Enabled;public DisplayProfile Current=new DisplayProfile();
   public List<DisplayProfile> Saved=new List<DisplayProfile>();public List<ScreenPreference> Known=new List<ScreenPreference>();public LegacyConfig Legacy;
-  public void Assign(Config other){SchemaVersion=other.SchemaVersion;Enabled=other.Enabled;Current=other.Current.Clone();Saved=other.Saved.Select(x=>x.Clone()).ToList();Known=other.Known.Select(x=>x.Clone()).ToList();Legacy=other.Legacy;}
+  public EditorState Editor=new EditorState();
+  public void Assign(Config other){SchemaVersion=other.SchemaVersion;Enabled=other.Enabled;Current=other.Current.Clone();Saved=other.Saved.Select(x=>x.Clone()).ToList();Known=other.Known.Select(x=>x.Clone()).ToList();Legacy=other.Legacy;Editor=(other.Editor??new EditorState()).Clone();}
   public Config Clone(){var c=new Config();c.Assign(this);return c;}
  }
  public static class ConfigCodec {
@@ -50,6 +66,7 @@ namespace ExternalDisplayGuard {
    }
    var c=serializer.Deserialize<Config>(json);
    if(c.SchemaVersion!=2||c.Current==null||c.Saved==null||c.Known==null)throw new InvalidOperationException("不支持此配置版本。");
+   if(c.Editor==null)c.Editor=new EditorState();if(c.Editor.Rows==null)c.Editor.Rows=new List<EditorScreen>();c.Editor.Rows=c.Editor.Rows.Where(x=>x!=null&&x.Preference!=null&&!string.IsNullOrEmpty(x.Preference.Id)).ToList();
    foreach(var p in c.Saved)p.Validate();if(c.Current.Screens.Count>0)c.Current.Validate();return c;
   }
   public static bool ResolveLegacy(Config c,Snapshot snapshot){

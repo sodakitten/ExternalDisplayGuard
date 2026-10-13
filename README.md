@@ -7,9 +7,9 @@
 ## 版本与下载
 
 - [稳定版 v1.0.0](https://github.com/sodakitten/ExternalDisplayGuard/releases/tag/v1.0.0)：旧版单外接屏 / 笔记本双屏功能。
-- [多屏预览版 v1.1.0-beta.2](https://github.com/sodakitten/ExternalDisplayGuard/releases/tag/v1.1.0-beta.2)：任意组合、免安装模式和每屏固定分辨率。只完成离线模拟和编译验证，尚未在真实三 / 四屏或真实桌面上验证。
+- [多屏预览版 v1.1.0-beta.3](https://github.com/sodakitten/ExternalDisplayGuard/releases/tag/v1.1.0-beta.3)：任意组合、免安装模式、每屏固定分辨率、直接保存预设及退出记忆。只完成离线模拟和编译验证，尚未在真实三 / 四屏或真实桌面上验证。
 
-免安装请选择 `ExternalDisplayGuard-v1.1.0-beta.2-portable-win-x64.zip`，解压后运行 EXE，保留同目录的 `portable.flag`。安装、更新和卸载脚本位于 `ExternalDisplayGuard-v1.1.0-beta.2-win-x64.zip`；单独下载 EXE 默认使用当前用户的应用数据目录。EXE 未进行数字签名。
+免安装请选择 `ExternalDisplayGuard-v1.1.0-beta.3-portable-win-x64.zip`，解压后运行 EXE，保留同目录的 `portable.flag`。安装、更新和卸载脚本位于 `ExternalDisplayGuard-v1.1.0-beta.3-win-x64.zip`；单独下载 EXE 默认使用当前用户的应用数据目录。EXE 未进行数字签名。
 
 ## 任意屏幕组合
 
@@ -19,9 +19,19 @@
 2. 选择主屏，为每块屏选择“保持当前”或具体缩放倍率，以及需要的方向。
 3. 点击“应用选择”，在 15 秒内选择“保留画面”；不确认或点击“还原”会尝试恢复之前的显示配置。
 4. 确认后自动保持该组合。游戏或驱动改变显示模式时，恢复的是当前已应用的组合。
-5. 可给组合命名，再点击“保存已应用组合”。以后从托盘调用，或载入后应用。
+5. 可给当前选择命名，点击“保存当前选择为预设”，无需先切换屏幕。以后可以“载入预设”继续编辑，或“应用预设”切换并确认；托盘也能调用预设。
 
 “全选”和“仅亮主屏”只是快捷选择。它们不限制其它组合。第一次安装默认不自动关闭任何屏幕，先由用户应用选择。
+
+## 预设与退出记忆
+
+保存预设保存的是界面里正在编辑的屏幕集合、主屏、分辨率、缩放、方向和布局。同名保存更新原预设，载入后修改不影响已经保存的副本。删除预设不会停用当前已确认组合。
+
+编辑结束、关闭设置或退出程序时，会自动记录各屏勾选状态、未勾选屏幕的参数、主屏选择、预设名称、下拉选择及窗口尺寸/最大化状态。未填写完成的分辨率文本也会留在编辑区。手动双击 EXE 会打开设置并恢复上次编辑；无需每次重新输入。
+
+已确认的显示组合单独保存在配置中。下次启动时，守护这个组合；尚未应用或未确认的编辑只恢复到界面，避免把编辑到一半的选择自动变成实际显示配置。已停用状态也保留。登录自启使用 `--background` 在托盘运行。
+
+表头和行高按文字自动调整，底部区域按内容排版；窗口放不下全部内容时可以滚动。界面使用 [DataGridView 自动表头高度](https://learn.microsoft.com/en-us/dotnet/api/system.windows.forms.datagridview.columnheadersheightsizemode) 和 [TableLayoutPanel 自动尺寸](https://learn.microsoft.com/en-us/dotnet/desktop/winforms/controls/autosize-behavior-in-the-tablelayoutpanel-control)。200% 等缩放下的真实视觉效果仍待使用者验证。
 
 ## 布局和每屏缩放
 

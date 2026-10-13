@@ -180,13 +180,36 @@ namespace ExternalDisplayGuard {
     Check(backend.State.Monitors.Where(m=>m.Active).Select(m=>m.StableId).OrderBy(id=>id).SequenceEqual(p.Screens.Select(x=>x.Id).OrderBy(id=>id))&&backend.State.Monitors.Where(m=>m.Active).All(m=>m.Width==p.Screens.Single(x=>x.Id==m.StableId).ResolutionWidth)&&backend.State.Monitors.Single(m=>m.StableId==primary).X==0,"fixed resolutions retain exact subset and primary for "+count+" screens mask="+mask);
    }
   }
+  static void EditorAndPresetChecks(){
+   var s=Fixture(3,false);var c=Configuration(s,Profile(s,1,"A"));var draft=Profile(s,6,"C");draft.Screens[0].ResolutionWidth=2560;draft.Screens[0].ResolutionHeight=1440;
+   PresetLibrary.Save(c,draft,"  工作双屏  ");Check(c.Saved.Count==1&&c.Saved[0].Name=="工作双屏"&&c.Saved[0].Screens.Count==2&&c.Saved[0].PrimaryId=="C","preset saves un-applied checkbox selection and primary rather than current applied profile");
+   Check(c.Current.Screens.Count==1&&c.Current.PrimaryId=="A","saving a draft preset leaves active guard profile unchanged");
+   draft.Screens[0].ResolutionWidth=3840;Check(c.Saved[0].Screens[0].ResolutionWidth==2560,"saved preset is independent of later editor changes");
+   var loaded=PresetLibrary.Load(c,"工作双屏");loaded.Screens[0].ScalePercent=400;Check(c.Saved[0].Screens[0].ScalePercent!=400,"loading a preset produces an independent editable copy");
+   PresetLibrary.Save(c,draft,"工作双屏");Check(c.Saved.Count==1&&c.Saved[0].Screens[0].ResolutionWidth==3840,"same-name save updates existing preset without duplicates");
+   bool rejected=false;try{PresetLibrary.Save(c,draft,"  ");}catch(InvalidOperationException){rejected=true;}Check(rejected&&c.Saved.Count==1,"blank preset name is rejected without altering saved entries");
+   draft.PrimaryId="missing";rejected=false;try{PresetLibrary.Save(c,draft,"工作双屏");}catch(InvalidOperationException){rejected=true;}Check(rejected&&c.Saved[0].PrimaryId=="C","invalid replacement cannot destroy an existing valid preset");
+   rejected=false;try{PresetLibrary.Load(c,"missing");}catch(InvalidOperationException){rejected=true;}Check(rejected,"missing preset is reported rather than guessing a selection");
+   c.Editor=new EditorState{ProfileName="编辑到一半",PrimaryId="C",SelectedPreset="工作双屏",WindowWidth=950,WindowHeight=620,Maximized=true};
+   foreach(var m in s.Monitors){var pref=ScreenPreference.From(m);pref.ScalePercent=m.StableId=="B"?200:150;c.Editor.Rows.Add(new EditorScreen{Preference=pref,Selected=m.StableId!="A",ResolutionText=m.StableId=="B"?"2560x1440":"3840x"});}
+   var restored=ConfigCodec.Parse(new JavaScriptSerializer().Serialize(c));Check(restored.Editor.Rows.Count==3&&restored.Editor.Rows[0].Selected==false&&restored.Editor.Rows[1].Selected&&restored.Editor.PrimaryId=="C","restart round trip remembers checked and unchecked screen rows and draft primary");
+   Check(restored.Editor.ProfileName=="编辑到一半"&&restored.Editor.SelectedPreset=="工作双屏"&&restored.Editor.Rows[1].Preference.ScalePercent==200&&restored.Editor.Rows[1].ResolutionText=="2560x1440","restart remembers name, selected preset, scale and raw resolution input");
+   Check(restored.Editor.Rows[2].ResolutionText=="3840x","unfinished resolution input is retained as editor text without being applied");
+   Check(restored.Editor.WindowWidth==950&&restored.Editor.WindowHeight==620&&restored.Editor.Maximized,"restart remembers logical window size and maximize state");
+   Check(restored.Saved.Count==1&&restored.Saved[0].Screens[0].ResolutionWidth==3840,"saved preset resolution persists across config round trips");
+   var copy=c.Clone();copy.Editor.Rows[1].Selected=false;copy.Editor.Rows[1].Preference.ScalePercent=100;Check(c.Editor.Rows[1].Selected&&c.Editor.Rows[1].Preference.ScalePercent==200,"preview/config copies cannot mutate remembered editor state");
+   var backend=new FakeDisplayBackend(s);var engine=Engine(restored,backend);engine.Step(Now);Check(backend.State.Monitors.Single(m=>m.Active).StableId=="A","restarting guard restores confirmed profile and never applies an unconfirmed editor draft");
+   c.Editor.Rows.ForEach(row=>row.Selected=false);restored=ConfigCodec.Parse(new JavaScriptSerializer().Serialize(c));Check(restored.Editor.Rows.All(row=>!row.Selected)&&restored.Current.Screens.Count==1,"temporarily unchecking every row can be remembered without allowing an all-off applied profile");
+   restored=ConfigCodec.Parse("{\"SchemaVersion\":2,\"Enabled\":false,\"Current\":{\"Name\":\"empty\",\"PrimaryId\":\"\",\"Screens\":[]},\"Saved\":[],\"Known\":[]}");Check(restored.Editor!=null&&restored.Editor.Rows.Count==0,"older versioned configs receive empty editor memory without migration hardware access");
+   restored=ConfigCodec.Parse("{\"SchemaVersion\":2,\"Current\":{\"Screens\":[]},\"Saved\":[],\"Known\":[],\"Editor\":null}");Check(restored.Editor!=null,"explicit null editor memory is safely defaulted");
+  }
   public static int Run(string path){
    passed=new List<string>();int code=0;object report;
    try{
     Check(Marshal.SizeOf(typeof(DisplayPath))==72&&Marshal.SizeOf(typeof(Mode))==64,"native display ABI definitions retained without invoking native APIs");
     Check(Marshal.SizeOf(typeof(SourceScaleGet))==32&&Marshal.SizeOf(typeof(SourceScaleSet))==24,"DPI packet ABI retained");
     Check(NativeDisplay.DecodeScale(-2,1,6).CurrentPercent==175&&NativeDisplay.RelativeScale(NativeDisplay.DecodeScale(-2,1,6),200)==2,"relative DPI arithmetic preserves 175 to 200 behavior");
-    Exhaustive(3,false);Exhaustive(4,false);Exhaustive(3,true);Exhaustive(4,true);EdgeCases();PreviewAndMigration();FixedResolutionChecks();
+    Exhaustive(3,false);Exhaustive(4,false);Exhaustive(3,true);Exhaustive(4,true);EdgeCases();PreviewAndMigration();FixedResolutionChecks();EditorAndPresetChecks();
     report=new{Result="PASS",Count=passed.Count,Backend="FakeDisplayBackend only",NativeDisplayCalls=0,Checks=passed};
    }catch(Exception e){code=1;report=new{Result="FAIL",Count=passed.Count,Backend="FakeDisplayBackend only",NativeDisplayCalls=0,Error=e.ToString(),Checks=passed};}
    string full=Path.GetFullPath(path);Directory.CreateDirectory(Path.GetDirectoryName(full));File.WriteAllText(full,new JavaScriptSerializer().Serialize(report),new System.Text.UTF8Encoding(false));return code;
