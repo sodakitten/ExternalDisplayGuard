@@ -2,14 +2,14 @@
 
 <img src="assets/app-icon.png" alt="Display Guard icon" width="128" />
 
-适用于台式机和笔记本的 Windows 托盘程序。每块物理显示器都能独立勾选，决定亮哪些屏幕，再指定主屏、各屏缩放和方向。不要求组合中存在笔记本屏幕，也不把台式机的某块显示器特殊当作“内屏”。
+适用于台式机和笔记本的 Windows 托盘程序。每块物理显示器都能独立勾选，决定亮哪些屏幕，再指定主屏、各屏分辨率、缩放和方向。不要求组合中存在笔记本屏幕，也不把台式机的某块显示器特殊当作“内屏”。
 
 ## 版本与下载
 
 - [稳定版 v1.0.0](https://github.com/sodakitten/ExternalDisplayGuard/releases/tag/v1.0.0)：旧版单外接屏 / 笔记本双屏功能。
-- [多屏预览版 v1.1.0-beta.1](https://github.com/sodakitten/ExternalDisplayGuard/releases/tag/v1.1.0-beta.1)：本分支的新功能。只完成离线模拟和编译验证，尚未在真实三 / 四屏或真实桌面上验证。
+- [多屏预览版 v1.1.0-beta.2](https://github.com/sodakitten/ExternalDisplayGuard/releases/tag/v1.1.0-beta.2)：任意组合、免安装模式和每屏固定分辨率。只完成离线模拟和编译验证，尚未在真实三 / 四屏或真实桌面上验证。
 
-下载预览版 `ExternalDisplayGuard.exe` 可直接运行。安装、更新和卸载脚本位于 `ExternalDisplayGuard-v1.1.0-beta.1-win-x64.zip`。EXE 未进行数字签名。
+免安装请选择 `ExternalDisplayGuard-v1.1.0-beta.2-portable-win-x64.zip`，解压后运行 EXE，保留同目录的 `portable.flag`。安装、更新和卸载脚本位于 `ExternalDisplayGuard-v1.1.0-beta.2-win-x64.zip`；单独下载 EXE 默认使用当前用户的应用数据目录。EXE 未进行数字签名。
 
 ## 任意屏幕组合
 
@@ -27,7 +27,15 @@
 
 用户可先在 Windows 显示设置中调整左右、上下、竖屏排列，再点击“记住当前布局”和“应用选择”。已有有效布局会保留；取消中间屏幕造成空隙或出现重叠时，会按相对次序排成连续桌面。确认后的布局保存到组合。
 
-每屏可独立保持 100%、125%、150%、175%、200% 等倍率，或保持当前值。某块屏的倍率不被硬件支持时会独立显示错误并限速重试，不拆掉已经成功的整个扩展桌面。分辨率和刷新率默认沿用可用时序，不锁定 HDR 或声音设备。
+每屏可独立保持 100%、125%、150%、175%、200% 等倍率，或保持当前值。某块屏的倍率不被硬件支持时会独立显示错误并限速重试，不拆掉已经成功的整个扩展桌面。刷新率沿用可用时序，不锁定 HDR 或声音设备。
+
+## 固定每屏分辨率
+
+“固定分辨率（宽×高）”列可填写 `3840×2160`、`2560x1440` 或竖屏的 `1080×1920`；也可点击“固定当前分辨率”，填入勾选且已亮起屏幕的当前尺寸。然后点击“应用选择”并在 15 秒内“保留画面”。目标分辨率和各屏缩放会保存到当前组合及常用组合，游戏改变桌面分辨率后自动尝试恢复。竖屏时应填写旋转后桌面显示的宽和高。
+
+填写“保持当前”或清空则不固定该屏分辨率；旧配置默认不固定，不会猜测或强制 4K。分辨率变化引起布局空隙或重叠时，按原次序压紧。
+
+Windows 会验证整组配置是否可用；指定分辨率时不允许静默替换为其它尺寸，并在应用后核对实际尺寸。失败会报错、尝试恢复应用前配置，并限速重试。这里固定的是 Windows 桌面像素尺寸，不承诺锁定显示器信号时序、刷新率或游戏内部渲染分辨率。实现使用 [DISPLAYCONFIG_SOURCE_MODE](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-displayconfig_source_mode) 与 [SetDisplayConfig](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setdisplayconfig)；硬件和驱动仍须支持请求的模式。
 
 “识别已亮屏幕”会临时在当前已启用的物理显示器上显示名称；不会为了识别而点亮关闭的屏幕。
 

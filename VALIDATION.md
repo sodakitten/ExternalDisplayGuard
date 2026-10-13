@@ -1,5 +1,11 @@
 # Validation
 
+## v1.1.0-beta.2
+
+Compilation uses warnings as errors. All 459 offline checks passed. Additional coverage includes independent 4K / 1440p / portrait dimensions, all nonempty three/four-screen subsets with fixed dimensions, game-like drift, unsupported or silently substituted dimensions, confirm/cancel/timeout, inactive targets, target-timing invalidation, native source positions with changed dimensions, non-GDI pixel-format normalization, parsing and config persistence. Old profiles remain unlocked. These synthetic results do not establish hardware support.
+
+The new EXE, GUI and native display backend were not run during this change; no live monitor enumeration or display switching was used for testing. The portable EXE is updated after the user exits the old process, while retaining configuration and backing up the prior binary.
+
 ## v1.1.0-beta.1
 
 Development followed the requirement not to test on the user's desktop. The installed v1.0.0 EXE, configuration, startup entries and real display modes were not changed. The new GUI, installer, updater, uninstaller and real monitor backend were not run.
@@ -18,10 +24,10 @@ Coverage includes:
 
 Run `test-offline.ps1` for a JSON report in the ignored `evidence` folder. Real three/four-monitor behavior, native path validation, drivers, docking stations, UI layout, per-monitor DPI, hotplug, next login, suspend/resume and long-term operation remain unverified.
 
-## Historical v1.0.0
-
-### Later portable packaging
+## Later portable packaging
 
 The portable storage switch was compiled with warnings treated as errors; the new application was not launched. At the user's later request, the old installation was backed up, stopped and removed along with its login startup value and known shortcuts, using the current uninstaller's display-preserving behavior. Eight other login startup values were checked unchanged. The old configuration, including its 200% scale preference, was copied to the portable directory. No native monitor tests or display-mode switches were performed as part of this migration.
+
+## Historical v1.0.0
 
 The previous single-external / laptop-two-display version had actual local desktop checks on Windows 11 build 26300. Those historical results do not validate the new multi-monitor backend or new UI.

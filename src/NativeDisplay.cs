@@ -16,6 +16,7 @@ namespace ExternalDisplayGuard {
   [FieldOffset(16)] public ulong U0; [FieldOffset(24)] public ulong U1; [FieldOffset(32)] public ulong U2;
   [FieldOffset(40)] public ulong U3; [FieldOffset(48)] public ulong U4; [FieldOffset(56)] public ulong U5;
   [FieldOffset(16)] public uint Width; [FieldOffset(20)] public uint Height;
+  [FieldOffset(24)] public uint PixelFormat;
   [FieldOffset(28)] public int X; [FieldOffset(32)] public int Y;
  }
  [StructLayout(LayoutKind.Sequential)] public struct DeviceHeader { public uint Type, Size; public Luid Adapter; public uint Id; }
@@ -142,11 +143,12 @@ namespace ExternalDisplayGuard {
     modes[id].X-=dx;modes[id].Y-=dy;
    }return modes;
   }
-  public static void ApplyPaths(DisplayPath[] paths,Mode[] modes){
+  public static void ApplyPaths(DisplayPath[] paths,Mode[] modes,bool allowChanges=true){
    uint count=modes==null?0u:(uint)modes.Length;
    if(count==0)modes=null;
-   Check(SetDisplayConfig((uint)paths.Length,paths,count,modes,0x20|0x40|0x400),"验证显示配置");
-   Check(SetDisplayConfig((uint)paths.Length,paths,count,modes,0x20|0x80|0x200|0x400),"应用显示配置");
+   uint adjust=allowChanges?0x400u:0u;
+   Check(SetDisplayConfig((uint)paths.Length,paths,count,modes,0x20|0x40|adjust),"验证显示配置");
+   Check(SetDisplayConfig((uint)paths.Length,paths,count,modes,0x20|0x80|0x200|adjust),"应用显示配置");
   }
   public static void Apply(Snapshot s,Monitor target,string mode){
    var paths=Choose(s,target,mode=="extend");

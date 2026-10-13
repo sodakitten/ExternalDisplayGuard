@@ -84,14 +84,14 @@ namespace ExternalDisplayGuard {
     var selected=selection.Screens.FirstOrDefault(p=>MonitorIdentity.Resolve(p,new[]{m})!=null);
     var pref=selected==null?ScreenPreference.From(m):selected.Clone();pref.Name=m.Name;
     if(!draftKnown.Any(p=>MonitorIdentity.Resolve(p,new[]{m})!=null))draftKnown.Add(ScreenPreference.From(m));
-    bool check=selected!=null||(selection.Screens.Count==0&&m.Active);AddRow(pref,check,m.Active?(m.X==0&&m.Y==0?"在线 · 当前主屏":"在线"):"在线 · 未启用",m.ScalePercent);
+    bool check=selected!=null||(selection.Screens.Count==0&&m.Active);AddRow(pref,check,m.Active?(m.X==0&&m.Y==0?"在线 · 当前主屏":"在线"):"在线 · 未启用",m.ScalePercent,m.Width,m.Height);
    }
    foreach(var pref in selection.Screens.Where(p=>MonitorIdentity.Resolve(p,available)==null))AddRow(pref.Clone(),true,"暂时离线",0);
    profileName.Text=selection.Name;var actualPrimary=available.FirstOrDefault(m=>m.Active&&m.X==0&&m.Y==0);string wanted=selection.Screens.Count==0&&actualPrimary!=null?MonitorIdentity.Id(actualPrimary):selection.PrimaryId;updating=false;UpdatePrimary(wanted);Sync();
   }
-  void AddRow(ScreenPreference pref,bool check,string state,int currentScale){
+  void AddRow(ScreenPreference pref,bool check,string state,int currentScale,uint width=0,uint height=0){
    int scaleIndex=pref.ScalePercent==0?0:Array.IndexOf(NativeDisplay.ScaleSteps,pref.ScalePercent)+1;
-   var scales=ScaleLabels();int index=grid.Rows.Add(check,pref.Name,state,currentScale>0?currentScale+"%":"—",scales[scaleIndex],RotationLabel(pref.Rotation));grid.Rows[index].Tag=pref;
+   var scales=ScaleLabels();int index=grid.Rows.Add(check,pref.Name,state,currentScale>0?currentScale+"%":"—",scales[scaleIndex],RotationLabel(pref.Rotation),width>0&&height>0?width+"×"+height:"—",ResolutionSetting.Format(pref.ResolutionWidth,pref.ResolutionHeight));grid.Rows[index].Tag=pref;
   }
   static string[] ScaleLabels(){return new[]{"保持当前"}.Concat(NativeDisplay.ScaleSteps.Select(x=>x+"%")).ToArray();}
   static string RotationLabel(int r){return new[]{"保持当前","横屏","竖屏（右转）","横屏（反向）","竖屏（左转）"}[r];}
@@ -105,7 +105,7 @@ namespace ExternalDisplayGuard {
    grid.EndEdit();var p=new DisplayProfile{Name=string.IsNullOrWhiteSpace(profileName.Text)?"当前选择":profileName.Text.Trim()};
    foreach(DataGridViewRow row in grid.Rows)if(Convert.ToBoolean(row.Cells[0].Value)){
     var pref=((ScreenPreference)row.Tag).Clone();string value=Convert.ToString(row.Cells[4].Value);pref.ScalePercent=value=="保持当前"?0:int.Parse(value.TrimEnd('%'));
-    pref.Rotation=Array.IndexOf(new[]{"保持当前","横屏","竖屏（右转）","横屏（反向）","竖屏（左转）"},Convert.ToString(row.Cells[5].Value));p.Screens.Add(pref);
+    pref.Rotation=Array.IndexOf(new[]{"保持当前","横屏","竖屏（右转）","横屏（反向）","竖屏（左转）"},Convert.ToString(row.Cells[5].Value));ResolutionSetting.Parse(Convert.ToString(row.Cells[7].Value),pref);p.Screens.Add(pref);
    }
    var main=primary.SelectedItem as ScreenChoice;if(main!=null)p.PrimaryId=main.Id;p.Validate();return p;
   }
@@ -121,7 +121,7 @@ namespace ExternalDisplayGuard {
    main=main??physical.FirstOrDefault(m=>m.Active&&m.X==0&&m.Y==0)??physical[0];
    var profile=new DisplayProfile{Name=all?"全部屏幕":"仅所选主屏"};
    foreach(var m in all?physical:new List<Monitor>{main}){var pref=ScreenPreference.From(m);var old=config.Current.Screens.FirstOrDefault(p=>MonitorIdentity.Resolve(p,new[]{m})!=null);
-    pref.ScalePercent=old==null?0:old.ScalePercent;profile.Screens.Add(pref);if(m.Key==main.Key)profile.PrimaryId=pref.Id;}
+    pref.ScalePercent=old==null?0:old.ScalePercent;if(old!=null){pref.ResolutionWidth=old.ResolutionWidth;pref.ResolutionHeight=old.ResolutionHeight;}profile.Screens.Add(pref);if(m.Key==main.Key)profile.PrimaryId=pref.Id;}
    PreviewProfile(profile);
   }
   void SavePreset(){
@@ -146,7 +146,7 @@ namespace ExternalDisplayGuard {
   Button Button(FlowLayoutPanel parent,string text,Action action){var b=new Button{Text=text,AutoSize=true,Margin=new Padding(4),Padding=new Padding(6,4,6,4)};b.Click+=(s,e)=>Safe(action);parent.Controls.Add(b);return b;}
   void ShowSettings(){
    if(settings!=null&&!settings.IsDisposed){settings.Show();NativeDisplay.ShowWindow(settings.Handle,5);settings.Activate();return;}
-   settings=new Form{Text="屏幕守护 · 多屏组合",Icon=windowIcon,ClientSize=new Size(900,600),MinimumSize=new Size(720,500),StartPosition=FormStartPosition.CenterScreen,Font=new Font("Microsoft YaHei UI",10),BackColor=Color.White};
+   settings=new Form{Text="屏幕守护 · 多屏组合",Icon=windowIcon,ClientSize=new Size(1120,640),MinimumSize=new Size(720,500),StartPosition=FormStartPosition.CenterScreen,Font=new Font("Microsoft YaHei UI",10),BackColor=Color.White};
    settings.SuspendLayout();settings.AutoScaleMode=AutoScaleMode.Dpi;settings.AutoScaleDimensions=new SizeF(96,96);
    var root=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=6,Padding=new Padding(16)};
    root.RowStyles.Add(new RowStyle(SizeType.AutoSize));root.RowStyles.Add(new RowStyle(SizeType.AutoSize));root.RowStyles.Add(new RowStyle(SizeType.Percent,100));
@@ -163,7 +163,9 @@ namespace ExternalDisplayGuard {
    grid.Columns.Add(new DataGridViewTextBoxColumn{Name="State",HeaderText="连接状态",ReadOnly=true,FillWeight=85});
    grid.Columns.Add(new DataGridViewTextBoxColumn{Name="CurrentScale",HeaderText="当前缩放",ReadOnly=true,FillWeight=60});
    var scale=new DataGridViewComboBoxColumn{Name="Scale",HeaderText="保持缩放",FillWeight=80};scale.Items.AddRange(ScaleLabels());grid.Columns.Add(scale);
-   var rotation=new DataGridViewComboBoxColumn{Name="Rotation",HeaderText="方向",FillWeight=85};rotation.Items.AddRange(new[]{"保持当前","横屏","竖屏（右转）","横屏（反向）","竖屏（左转）"});grid.Columns.Add(rotation);root.Controls.Add(grid,0,2);
+   var rotation=new DataGridViewComboBoxColumn{Name="Rotation",HeaderText="方向",FillWeight=85};rotation.Items.AddRange(new[]{"保持当前","横屏","竖屏（右转）","横屏（反向）","竖屏（左转）"});grid.Columns.Add(rotation);
+   grid.Columns.Add(new DataGridViewTextBoxColumn{Name="CurrentResolution",HeaderText="当前分辨率",ReadOnly=true,FillWeight=85});
+   var resolution=new DataGridViewTextBoxColumn{Name="Resolution",HeaderText="固定分辨率（宽×高）",FillWeight=105};resolution.HeaderCell.ToolTipText="例如 3840×2160 或 2560x1440；填写“保持当前”则不固定。由 Windows 验证是否支持。";grid.Columns.Add(resolution);root.Controls.Add(grid,0,2);
    grid.CurrentCellDirtyStateChanged+=(s,e)=>{if(grid.IsCurrentCellDirty)grid.CommitEdit(DataGridViewDataErrorContexts.Commit);};
    grid.CellValueChanged+=(s,e)=>{if(!updating&&e.ColumnIndex==0)UpdatePrimary(null);};
    grid.DataError+=(s,e)=>{e.ThrowException=false;};
@@ -172,6 +174,7 @@ namespace ExternalDisplayGuard {
    primary=new ComboBox{Width=240,DropDownStyle=ComboBoxStyle.DropDownList,Margin=new Padding(4,8,10,4)};selection.Controls.Add(primary);
    Button(selection,"全选",()=>{if(engine.PreviewActive)return;updating=true;foreach(DataGridViewRow row in grid.Rows)row.Cells[0].Value=true;updating=false;UpdatePrimary(null);});
    Button(selection,"仅亮主屏",()=>{if(engine.PreviewActive)return;var selected=primary.SelectedItem as ScreenChoice;if(selected==null)return;updating=true;foreach(DataGridViewRow row in grid.Rows)row.Cells[0].Value=MonitorIdentity.Equal(((ScreenPreference)row.Tag).Id,selected.Id);updating=false;UpdatePrimary(selected.Id);});
+   Button(selection,"固定当前分辨率",()=>{if(engine.PreviewActive)return;grid.EndEdit();var snapshot=backend.Query(false);foreach(DataGridViewRow row in grid.Rows)if(Convert.ToBoolean(row.Cells[0].Value)){var m=MonitorIdentity.Resolve((ScreenPreference)row.Tag,snapshot.Monitors);if(m!=null&&m.Width>0&&m.Height>0)row.Cells[7].Value=ResolutionSetting.Format((int)m.Width,(int)m.Height);}});
    Button(selection,"记住当前布局",CaptureLayout);apply=Button(selection,"应用选择",()=>{engine.BeginPreview(Draft(),draftKnown,DateTime.UtcNow);Sync();});
    var saved=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Fill};root.Controls.Add(saved,0,4);
    saved.Controls.Add(new Label{Text="组合名称",AutoSize=true,Margin=new Padding(4,14,4,4)});profileName=new TextBox{Width=160,Margin=new Padding(4,8,8,4)};saved.Controls.Add(profileName);

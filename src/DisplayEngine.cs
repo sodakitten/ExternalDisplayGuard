@@ -13,10 +13,8 @@ namespace ExternalDisplayGuard {
   public void Apply(DisplayPlan plan){
    if(TopologyPlanner.Token(Query(true))!=plan.ConnectionToken)throw new InvalidOperationException("连接状态已变化，请重试。");
    var paths=(DisplayPath[])plan.Paths.Clone();var modes=(Mode[])plan.Modes.Clone();
-   if(paths.All(p=>p.Source.ModeIndex<modes.Length)&&plan.Selection.Screens.All(m=>m.Width>0&&m.Height>0)){
-    var positions=TopologyPlanner.Layout(plan.Selection);foreach(var p in paths){modes[p.Source.ModeIndex].X=positions[NativeDisplay.Key(p)][0];modes[p.Source.ModeIndex].Y=positions[NativeDisplay.Key(p)][1];}
-   }
-   NativeDisplay.ApplyPaths(paths,modes);
+   TopologyPlanner.PositionSuppliedModes(paths,modes,plan.Selection);
+   bool allowChanges=!plan.Selection.Preferences.Values.Any(p=>p.ResolutionWidth>0);NativeDisplay.ApplyPaths(paths,modes,allowChanges);
    var fresh=Query(false);var actual=new Selection{Preferences=plan.Selection.Preferences};
    foreach(var wanted in plan.Selection.Screens){var m=fresh.Monitors.SingleOrDefault(x=>x.Key==wanted.Key&&x.Available&&x.Active);if(m==null)throw new InvalidOperationException("应用后屏幕未激活："+wanted.Name);actual.Screens.Add(m);}
    actual.Primary=actual.Screens.Single(x=>x.Key==plan.Selection.Primary.Key);
@@ -24,20 +22,21 @@ namespace ExternalDisplayGuard {
    var layout=TopologyPlanner.Layout(actual);bool move=actual.Screens.Any(m=>m.X!=layout[m.Key][0]||m.Y!=layout[m.Key][1]);
    if(move){var positioned=(Mode[])fresh.Modes.Clone();var active=fresh.Paths.OrderByDescending(x=>NativeDisplay.Key(x)==actual.Primary.Key).ToArray();
     for(int i=0;i<active.Length;i++){var p=active[i];if(!TopologyPlanner.ValidMode(positioned,p.Source.ModeIndex,1,p.Source.Id,p.Source.Adapter))throw new InvalidOperationException("驱动未提供稳定的屏幕位置。");p.Flags=1;active[i]=p;positioned[p.Source.ModeIndex].X=layout[NativeDisplay.Key(p)][0];positioned[p.Source.ModeIndex].Y=layout[NativeDisplay.Key(p)][1];}
-    NativeDisplay.ApplyPaths(active,positioned);
+    NativeDisplay.ApplyPaths(active,positioned,allowChanges);
    }
   }
   public void Restore(Snapshot before){
-   var now=Query(true);var old=before.Monitors.Where(m=>MonitorIdentity.IsPhysical(m)&&m.Active).Select(ScreenPreference.From).ToList();
+   var now=Query(true);var old=before.Monitors.Where(m=>MonitorIdentity.IsPhysical(m)&&m.Active).Select(m=>{var p=ScreenPreference.From(m);p.ResolutionWidth=(int)m.Width;p.ResolutionHeight=(int)m.Height;return p;}).ToList();
    if(now.Monitors.Any(m=>m.Active&&!MonitorIdentity.IsPhysical(m)))throw new InvalidOperationException("虚拟或远程桌面已激活，保留当前输出并暂停还原。");
    var connectedBefore=before.Connections??before.Monitors;
    if(now.Monitors.Any(m=>MonitorIdentity.IsPhysical(m)&&m.Available&&!connectedBefore.Any(x=>MonitorIdentity.Resolve(ScreenPreference.From(x),new[]{m})!=null)))throw new InvalidOperationException("出现新的显示器，保留当前输出并暂停还原。");
    if(old.Count==0)return;
-   bool restored=false;if(before.Paths.All(p=>now.Paths.Any(x=>NativeDisplay.Key(x)==NativeDisplay.Key(p)&&x.Target.Available!=0))){try{NativeDisplay.Restore(before);restored=true;}catch{}}
-   if(!restored){var primary=before.Monitors.FirstOrDefault(m=>m.Active&&m.X==0&&m.Y==0&&MonitorIdentity.IsPhysical(m));
-    var profile=new DisplayProfile{Screens=old,PrimaryId=primary==null?old[0].Id:MonitorIdentity.Id(primary)};
+   var primary=before.Monitors.FirstOrDefault(m=>m.Active&&m.X==0&&m.Y==0&&MonitorIdentity.IsPhysical(m));var profile=new DisplayProfile{Screens=old,PrimaryId=primary==null?old[0].Id:MonitorIdentity.Id(primary)};
+   bool restored=false;if(before.Paths.All(p=>now.Paths.Any(x=>NativeDisplay.Key(x)==NativeDisplay.Key(p)&&x.Target.Available!=0))){try{NativeDisplay.Restore(before);restored=TopologyPlanner.Matches(Query(false),TopologyPlanner.Resolve(profile,before.Monitors.Select(ScreenPreference.From),Query(true)));}catch{}}
+   if(!restored){
+    now=Query(true);
     var selection=TopologyPlanner.Resolve(profile,before.Monitors.Where(MonitorIdentity.IsPhysical).Select(ScreenPreference.From),now);
-    if(selection.Screens.Count>0)Apply(TopologyPlanner.Build(now,selection));
+    if(selection.Screens.Count>0){Apply(TopologyPlanner.Build(now,selection));TopologyPlanner.Verify(Query(false),selection);}
    }
    var active=Query(false);foreach(var previous in before.Monitors.Where(m=>m.Active&&MonitorIdentity.IsPhysical(m)&&m.ScalePercent>0)){
     var current=MonitorIdentity.Resolve(ScreenPreference.From(previous),active.Monitors);if(current!=null)SetScale(active,current,previous.ScalePercent);
@@ -74,7 +73,7 @@ namespace ExternalDisplayGuard {
      while(topologyChanges.Count>0&&now-topologyChanges.Peek()>TimeSpan.FromMinutes(1))topologyChanges.Dequeue();
      if(topologyChanges.Count>=4){retryUntil=now.AddMinutes(1);Status="显示模式反复变化，冷却 60 秒";return Status;}
      var plan=TopologyPlanner.Build(all,selection);topologyChanges.Enqueue(now);
-     try{backend.Apply(plan);if(!TopologyPlanner.Matches(backend.Query(false),selection))throw new InvalidOperationException("驱动未确认完整屏幕组合。");}catch(Exception e){try{backend.Restore(active);}catch(Exception restore){retryUntil=now.AddMinutes(1);Record("恢复失败，保留现有输出："+restore.Message);}throw new InvalidOperationException("切换未成功："+e.Message,e);}
+     try{backend.Apply(plan);TopologyPlanner.Verify(backend.Query(false),selection);}catch(Exception e){try{backend.Restore(active);}catch(Exception restore){retryUntil=now.AddMinutes(1);Record("恢复失败，保留现有输出："+restore.Message);}throw new InvalidOperationException("切换未成功："+e.Message,e);}
      active=backend.Query(false);selection=TopologyPlanner.Resolve(c.Current,c.Known,backend.Query(true));Record("已恢复屏幕组合："+c.Current.Name);
     }
     var errors=new List<string>();
@@ -97,7 +96,7 @@ namespace ExternalDisplayGuard {
    foreach(var m in all.Monitors.Where(x=>x.Available&&MonitorIdentity.IsPhysical(x)))if(!candidate.Known.Any(k=>MonitorIdentity.Resolve(k,new[]{m})!=null))candidate.Known.Add(ScreenPreference.From(m));
    var selected=TopologyPlanner.Resolve(candidate.Current,candidate.Known,all);if(selected.Screens.Count==0||selected.Fallback)throw new InvalidOperationException("至少选择一块当前在线的屏幕。");
    var plan=TopologyPlanner.Build(all,selected);
-   try{backend.Apply(plan);if(!TopologyPlanner.Matches(backend.Query(false),selected))throw new InvalidOperationException("系统未确认完整的屏幕组合。");}catch{try{backend.Restore(before);}catch(Exception e){Record("恢复失败："+e.Message);retryUntil=now.AddMinutes(1);}throw;}
+   try{backend.Apply(plan);TopologyPlanner.Verify(backend.Query(false),selected);}catch{try{backend.Restore(before);}catch(Exception e){Record("恢复失败："+e.Message);retryUntil=now.AddMinutes(1);}throw;}
    previewBefore=before;pending=candidate;deadline=now.AddSeconds(15);pauseUntil=retryUntil=DateTime.MinValue;topologyChanges.Clear();scaleRetry.Clear();scaleChanges.Clear();scaleFailures.Clear();Step(now);
   }
   public void ConfirmPreview(DateTime now){

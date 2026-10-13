@@ -8,7 +8,8 @@ using System.Web.Script.Serialization;
 namespace ExternalDisplayGuard {
  // This fake never calls NativeBackend, user32, WMI, Registry or application configuration storage.
  public class FakeDisplayBackend:IDisplayBackend {
-  public Snapshot State;public bool RemoteMode,FailApply,FailRestore,CorruptApply;public int Applied,Restored,ScaleCalls,Queries,RestoreConnections;
+  public Snapshot State;public bool RemoteMode,FailApply,FailRestore,CorruptApply,CorruptResolution;public int Applied,Restored,ScaleCalls,Queries,RestoreConnections;
+  public readonly HashSet<string> BadResolutions=new HashSet<string>();
   public readonly HashSet<string> BadScales=new HashSet<string>();public bool Remote {get{return RemoteMode;}}
   public FakeDisplayBackend(Snapshot state){State=Copy(state);}
   public static Snapshot Copy(Snapshot s){return new Snapshot{Paths=(DisplayPath[])s.Paths.Clone(),Modes=(Mode[])s.Modes.Clone(),Monitors=s.Monitors.Select(x=>x.Clone()).ToList(),Connections=s.Connections==null?null:s.Connections.Select(x=>x.Clone()).ToList()};}
@@ -18,7 +19,7 @@ namespace ExternalDisplayGuard {
    var modes=new List<Mode>();var assignments=new Dictionary<string,DisplayPath>();
    foreach(var m in State.Monitors.Where(x=>x.Active&&x.Available)){
     DisplayPath p;if(!chosen.TryGetValue(m.Key,out p))p=State.Paths.First(x=>NativeDisplay.Key(x)==m.Key&&(x.Flags&1)!=0);
-    p.Source.ModeIndex=(uint)modes.Count;modes.Add(new Mode{Type=1,Id=p.Source.Id,Adapter=p.Source.Adapter,Width=m.Width,Height=m.Height,X=m.X,Y=m.Y});
+    p.Source.ModeIndex=(uint)modes.Count;modes.Add(new Mode{Type=1,Id=p.Source.Id,Adapter=p.Source.Adapter,PixelFormat=4,Width=m.Width,Height=m.Height,X=m.X,Y=m.Y});
     p.Target.ModeIndex=(uint)modes.Count;modes.Add(new Mode{Type=2,Id=p.Target.Id,Adapter=p.Target.Adapter,U0=12345});p.Flags=1;assignments[m.Key]=p;
    }
    for(int i=0;i<State.Paths.Length;i++){
@@ -27,9 +28,10 @@ namespace ExternalDisplayGuard {
    }State.Modes=modes.ToArray();
   }
   public void Apply(DisplayPlan plan){
-   Applied++;var selected=new List<Monitor>();
+   Applied++;var selected=new List<Monitor>();if(plan.Selection.Screens.Any(m=>BadResolutions.Contains(m.StableId)&&plan.Selection.Preferences[m.Key].ResolutionWidth>0))throw new InvalidOperationException("simulated unsupported resolution");
    foreach(var m in State.Monitors){m.Active=plan.Selection.Screens.Any(x=>x.Key==m.Key)&&m.Available;if(!m.Active)continue;
     var pref=plan.Selection.Preferences[m.Key];if(pref.Rotation>0){if(m.Rotation>0&&(m.Rotation%2)!=(pref.Rotation%2)){uint width=m.Width;m.Width=m.Height;m.Height=width;}m.Rotation=pref.Rotation;}
+    if(pref.ResolutionWidth>0){var packet=plan.Paths.Single(path=>NativeDisplay.Key(path)==m.Key);var mode=plan.Modes[packet.Source.ModeIndex];if(mode.Type!=1||mode.Id!=packet.Source.Id)throw new InvalidOperationException("invalid mock source mode packet");m.Width=mode.Width;m.Height=mode.Height;if(CorruptResolution)m.Width=800;}
     if(m.Width==0)m.Width=1920;if(m.Height==0)m.Height=1080;selected.Add(m);
    }
    var selection=new Selection{Screens=selected,Primary=selected.First(x=>x.Key==plan.Selection.Primary.Key),Preferences=plan.Selection.Preferences};var positions=TopologyPlanner.Layout(selection);
@@ -56,7 +58,7 @@ namespace ExternalDisplayGuard {
     int technology=laptop&&i==0?11:5;string id=((char)('A'+i)).ToString();
     var target=new PathTarget{Adapter=adapter,Id=(uint)i+1,Technology=technology,Available=1,Rotation=1,Scaling=1,Refresh=new Rational{Numerator=160,Denominator=1}};
     var m=new Monitor{Key=adapter+":"+target.Id,Name="Mock "+id,DevicePath="fake://"+id,StableId=id,Fingerprint="serial:"+id,Model="model:"+id,Technology=technology,Rotation=1,Internal=NativeDisplay.IsInternal(technology),External=NativeDisplay.IsExternal(technology),Active=true,Available=true,Width=1920,Height=1080,X=x,Y=0,ScalePercent=100,RefreshHz=160};s.Monitors.Add(m);x+=1920;
-    s.Modes[i*2]=new Mode{Type=1,Id=(uint)i,Adapter=adapter,Width=m.Width,Height=m.Height,X=m.X,Y=m.Y};s.Modes[i*2+1]=new Mode{Type=2,Id=target.Id,Adapter=adapter,U0=12345};
+    s.Modes[i*2]=new Mode{Type=1,Id=(uint)i,Adapter=adapter,PixelFormat=4,Width=m.Width,Height=m.Height,X=m.X,Y=m.Y};s.Modes[i*2+1]=new Mode{Type=2,Id=target.Id,Adapter=adapter,U0=12345};
     for(int source=0;source<count;source++){
      var p=new DisplayPath{Source=new PathSource{Adapter=adapter,Id=(uint)source,ModeIndex=uint.MaxValue},Target=target};p.Target.ModeIndex=uint.MaxValue;
      if(source==i){p.Flags=1;p.Source.ModeIndex=(uint)(i*2);p.Target.ModeIndex=(uint)(i*2+1);}paths.Add(p);
@@ -145,13 +147,46 @@ namespace ExternalDisplayGuard {
    engine.Configuration.Known.Clear(); // Preview retains its own independent baseline.
    engine.ConfirmPreview(Now.AddSeconds(1));Check(engine.Configuration.Known.Count==4,"preview confirmation uses an isolated connection baseline");
   }
+  static void FixedResolutionChecks(){
+   var s=Fixture(4,false);var p=Profile(s,7,"B");
+   p.Screens[0].ResolutionWidth=3840;p.Screens[0].ResolutionHeight=2160;p.Screens[1].ResolutionWidth=2560;p.Screens[1].ResolutionHeight=1440;p.Screens[2].ResolutionWidth=1080;p.Screens[2].ResolutionHeight=1920;p.Screens[2].Rotation=2;
+   var backend=new FakeDisplayBackend(s);var engine=Engine(Configuration(s,p),backend);engine.Step(Now);
+   Check(backend.State.Monitors.Where(m=>m.Active).All(m=>{var desired=p.Screens.Single(x=>x.Id==m.StableId);return m.Width==desired.ResolutionWidth&&m.Height==desired.ResolutionHeight;}),"independent 4K, 1440p and portrait resolution locks are applied from native mode packets");
+   Check(backend.State.Monitors.Single(m=>m.StableId=="B").X==0&&TopologyPlanner.Connected(backend.State.Monitors.Where(m=>m.Active).ToList(),backend.State.Monitors.Where(m=>m.Active).ToDictionary(m=>m.Key,m=>new[]{m.X,m.Y})),"mixed resolution desktop is connected with requested primary origin");
+   int applied=backend.Applied;engine.Step(Now.AddSeconds(5));Check(backend.Applied==applied,"matching fixed resolutions cause no repeated mode application");
+   backend.State.Monitors[0].Width=1280;backend.State.Monitors[0].Height=720;engine.Step(Now.AddSeconds(10));Check(backend.State.Monitors[0].Width==3840&&backend.State.Monitors[0].ScalePercent==100,"game-like resolution drift is restored without losing scale preference");
+   backend=new FakeDisplayBackend(s);backend.CorruptResolution=true;engine=Engine(Configuration(s,p),backend);engine.Step(Now);Check(backend.Restored==1&&backend.State.Monitors.All(m=>m.Width==1920),"driver silently substituting a different resolution is rejected and rolled back");
+   backend=new FakeDisplayBackend(s);backend.BadResolutions.Add("A");engine=Engine(new Config(),backend);bool rejected=false;try{engine.BeginPreview(p,s.Monitors.Select(ScreenPreference.From),Now);}catch(InvalidOperationException){rejected=true;}Check(rejected&&!engine.PreviewActive&&backend.Restored==1,"unsupported resolution cannot arm preview or persist a profile");
+   backend=new FakeDisplayBackend(s);engine=Engine(new Config(),backend);engine.BeginPreview(p,s.Monitors.Select(ScreenPreference.From),Now);engine.CancelPreview();Check(backend.State.Monitors.All(m=>m.Width==1920&&m.Height==1080),"cancel restores old resolution as well as old topology");
+   engine.BeginPreview(p,s.Monitors.Select(ScreenPreference.From),Now.AddSeconds(30));engine.Step(Now.AddSeconds(46));Check(!engine.PreviewActive&&backend.State.Monitors.All(m=>m.Width==1920),"preview timeout restores original resolutions");
+   backend=new FakeDisplayBackend(s);engine=Engine(new Config(),backend);engine.BeginPreview(p,s.Monitors.Select(ScreenPreference.From),Now);engine.ConfirmPreview(Now.AddSeconds(1));var parsed=ConfigCodec.Parse(new JavaScriptSerializer().Serialize(engine.Configuration));Check(parsed.Current.Screens[0].ResolutionWidth==3840&&parsed.Current.Screens[2].ResolutionHeight==1920,"confirmed per-screen resolutions survive config serialization");
+   var noLock=Profile(s,1,"A");s.Monitors[0].Width=2560;s.Monitors[0].Height=1440;backend=new FakeDisplayBackend(s);engine=Engine(Configuration(s,noLock),backend);engine.Step(Now);Check(backend.State.Monitors[0].Width==2560,"old and unlocked profiles do not invent a fixed resolution");
+   var pref=new ScreenPreference();ResolutionSetting.Parse(" 2560 X 1440 ",pref);Check(pref.ResolutionWidth==2560&&pref.ResolutionHeight==1440,"resolution input accepts spaced x notation");ResolutionSetting.Parse("1080×1920",pref);Check(pref.ResolutionHeight==1920,"resolution input supports portrait dimensions");ResolutionSetting.Parse("保持当前",pref);Check(pref.ResolutionWidth==0&&pref.ResolutionHeight==0,"keep-current removes both resolution dimensions");
+   foreach(var invalid in new[]{"0x0","3840","4K","3840x0","-1x1080","99999x2160","1920x1080x60"}){rejected=false;try{ResolutionSetting.Parse(invalid,pref);}catch(InvalidOperationException){rejected=true;}Check(rejected,"invalid resolution input rejected: "+invalid);}
+   p=Profile(s,1,"A");p.Screens[0].ResolutionWidth=1920;rejected=false;try{p.Validate();}catch(InvalidOperationException){rejected=true;}Check(rejected,"config rejects partial resolution dimensions");
+   // Connected but inactive screens have no source mode to reuse.
+   s=Fixture(2,false);s.Monitors[1].Active=false;s.Monitors[1].Width=s.Monitors[1].Height=0;for(int i=0;i<s.Paths.Length;i++){var path=s.Paths[i];if(path.Target.Id==2){path.Flags=0;path.Source.ModeIndex=path.Target.ModeIndex=uint.MaxValue;s.Paths[i]=path;}}
+   p=Profile(s,2,"B");p.Screens[0].ResolutionWidth=3840;p.Screens[0].ResolutionHeight=2160;var plan=TopologyPlanner.Build(s,TopologyPlanner.Resolve(p,s.Monitors.Select(ScreenPreference.From),s));Check(plan.Modes.Length==1&&plan.Modes[0].Width==3840&&plan.Modes[0].PixelFormat==4&&plan.Paths[0].Target.ModeIndex==uint.MaxValue,"inactive target receives a valid 32bpp source and unspecified target timing");
+   backend=new FakeDisplayBackend(s);engine=Engine(Configuration(s,p),backend);engine.Step(Now);Check(backend.State.Monitors[1].Active&&backend.State.Monitors[1].Width==3840,"resolution lock also activates a previously off selected monitor");
+   s=Fixture(2,false);p=Profile(s,1,"A");p.Screens[0].ResolutionWidth=1920;p.Screens[0].ResolutionHeight=1080;plan=TopologyPlanner.Build(s,TopologyPlanner.Resolve(p,s.Monitors.Select(ScreenPreference.From),s));Check(plan.Paths[0].Target.ModeIndex!=uint.MaxValue&&plan.Modes[plan.Paths[0].Target.ModeIndex].U0==12345,"unchanged resolution preserves existing target timing");
+   p.Screens[0].ResolutionWidth=3840;p.Screens[0].ResolutionHeight=2160;plan=TopologyPlanner.Build(s,TopologyPlanner.Resolve(p,s.Monitors.Select(ScreenPreference.From),s));Check(plan.Paths[0].Target.ModeIndex==uint.MaxValue&&plan.Paths[0].Target.Refresh.Numerator==0&&s.Modes[0].Width==1920,"changed resolution invalidates stale timing and leaves baseline snapshot untouched");
+   s.Modes[0].PixelFormat=5;plan=TopologyPlanner.Build(s,TopologyPlanner.Resolve(p,s.Monitors.Select(ScreenPreference.From),s));Check(plan.Modes[plan.Paths[0].Source.ModeIndex].PixelFormat==4,"game-returned non-GDI pixel format is normalized for fixed-resolution configuration");
+   s=Fixture(2,false);p=Profile(s,3,"B");p.Screens[0].ResolutionWidth=3840;p.Screens[0].ResolutionHeight=2160;plan=TopologyPlanner.Build(s,TopologyPlanner.Resolve(p,s.Monitors.Select(ScreenPreference.From),s));TopologyPlanner.PositionSuppliedModes(plan.Paths,plan.Modes,plan.Selection);
+   Check(plan.Modes[plan.Paths.Single(path=>path.Target.Id==1).Source.ModeIndex].X==-3840&&plan.Modes[plan.Paths.Single(path=>path.Target.Id==2).Source.ModeIndex].X==0,"native source positions use new fixed dimensions before first application");
+   for(int count=3;count<=4;count++)for(int mask=1;mask<(1<<count);mask++){
+    s=Fixture(count,false);string primary=s.Monitors.Where((m,index)=>(mask&(1<<index))!=0).Last().StableId;p=Profile(s,mask,primary);
+    foreach(var desired in p.Screens){desired.ResolutionWidth=desired.Id=="C"?3840:2560;desired.ResolutionHeight=desired.Id=="C"?2160:1440;}
+    backend=new FakeDisplayBackend(s);engine=Engine(Configuration(s,p),backend);engine.Step(Now);
+    Check(backend.State.Monitors.Where(m=>m.Active).Select(m=>m.StableId).OrderBy(id=>id).SequenceEqual(p.Screens.Select(x=>x.Id).OrderBy(id=>id))&&backend.State.Monitors.Where(m=>m.Active).All(m=>m.Width==p.Screens.Single(x=>x.Id==m.StableId).ResolutionWidth)&&backend.State.Monitors.Single(m=>m.StableId==primary).X==0,"fixed resolutions retain exact subset and primary for "+count+" screens mask="+mask);
+   }
+  }
   public static int Run(string path){
    passed=new List<string>();int code=0;object report;
    try{
     Check(Marshal.SizeOf(typeof(DisplayPath))==72&&Marshal.SizeOf(typeof(Mode))==64,"native display ABI definitions retained without invoking native APIs");
     Check(Marshal.SizeOf(typeof(SourceScaleGet))==32&&Marshal.SizeOf(typeof(SourceScaleSet))==24,"DPI packet ABI retained");
     Check(NativeDisplay.DecodeScale(-2,1,6).CurrentPercent==175&&NativeDisplay.RelativeScale(NativeDisplay.DecodeScale(-2,1,6),200)==2,"relative DPI arithmetic preserves 175 to 200 behavior");
-    Exhaustive(3,false);Exhaustive(4,false);Exhaustive(3,true);Exhaustive(4,true);EdgeCases();PreviewAndMigration();
+    Exhaustive(3,false);Exhaustive(4,false);Exhaustive(3,true);Exhaustive(4,true);EdgeCases();PreviewAndMigration();FixedResolutionChecks();
     report=new{Result="PASS",Count=passed.Count,Backend="FakeDisplayBackend only",NativeDisplayCalls=0,Checks=passed};
    }catch(Exception e){code=1;report=new{Result="FAIL",Count=passed.Count,Backend="FakeDisplayBackend only",NativeDisplayCalls=0,Error=e.ToString(),Checks=passed};}
    string full=Path.GetFullPath(path);Directory.CreateDirectory(Path.GetDirectoryName(full));File.WriteAllText(full,new JavaScriptSerializer().Serialize(report),new System.Text.UTF8Encoding(false));return code;

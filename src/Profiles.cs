@@ -6,7 +6,7 @@ using System.Web.Script.Serialization;
 namespace ExternalDisplayGuard {
  public class ScreenPreference {
   public string Id="",DevicePath="",Fingerprint="",Model="",Name="";
-  public int ScalePercent,Rotation,X,Y; public bool HasPosition;
+  public int ScalePercent,Rotation,X,Y,ResolutionWidth,ResolutionHeight; public bool HasPosition;
   public ScreenPreference Clone(){return (ScreenPreference)MemberwiseClone();}
   public static ScreenPreference From(Monitor m){return new ScreenPreference{Id=MonitorIdentity.Id(m),DevicePath=m.DevicePath??"",Fingerprint=m.Fingerprint??"",Model=m.Model??"",Name=m.Name??"",Rotation=m.Rotation,X=m.X,Y=m.Y,HasPosition=m.Active};}
  }
@@ -20,6 +20,17 @@ namespace ExternalDisplayGuard {
    if(!Screens.Any(x=>string.Equals(x.Id,PrimaryId,StringComparison.OrdinalIgnoreCase)))throw new InvalidOperationException("主屏必须是已勾选的屏幕。");
    if(Screens.Any(x=>x.ScalePercent!=0&&!NativeDisplay.ScaleSteps.Contains(x.ScalePercent)))throw new InvalidOperationException("缩放倍率无效。");
    if(Screens.Any(x=>x.Rotation<0||x.Rotation>4))throw new InvalidOperationException("屏幕方向无效。");
+   foreach(var screen in Screens)ResolutionSetting.Validate(screen.ResolutionWidth,screen.ResolutionHeight);
+  }
+ }
+ public static class ResolutionSetting {
+  public static void Validate(int width,int height){if(width==0&&height==0)return;if(width<200||height<200||width>32768||height>32768)throw new InvalidOperationException("分辨率需填写宽×高（200 至 32768 像素），例如 3840×2160；或填写“保持当前”。");}
+  public static string Format(int width,int height){return width==0&&height==0?"保持当前":width+"×"+height;}
+  public static void Parse(string text,ScreenPreference preference){
+   text=(text??"").Trim();if(text.Length==0||text=="保持当前"){preference.ResolutionWidth=preference.ResolutionHeight=0;return;}
+   var parts=text.ToLowerInvariant().Replace('×','x').Replace('*','x').Split('x');int width,height;
+   if(parts.Length!=2||!int.TryParse(parts[0].Trim(),out width)||!int.TryParse(parts[1].Trim(),out height))throw new InvalidOperationException("分辨率格式应为 3840×2160 或“保持当前”。");
+   Validate(width,height);if(width==0||height==0)throw new InvalidOperationException("固定分辨率不能为零；不固定请填写“保持当前”。");preference.ResolutionWidth=width;preference.ResolutionHeight=height;
   }
  }
  public class LegacyConfig {public bool Enabled=true;public string Mode="external",TargetPath="",TargetName="";public int ExternalScalePercent=200;}
@@ -94,14 +105,22 @@ namespace ExternalDisplayGuard {
     if(options.Count==0)throw new InvalidOperationException("没有可用的显示路径："+m.Name);candidates[m.Key]=options;}
    var assignment=new Dictionary<string,DisplayPath>();int visited=0;
    if(!Assign(ordered.OrderBy(m=>candidates[m.Key].Count).ToArray(),0,candidates,assignment,new HashSet<string>(),ref visited))throw new InvalidOperationException("硬件没有足够的独立显示路径支持这个组合。");
-   var paths=ordered.Select(m=>assignment[m.Key]).ToArray();var modes=(Mode[])snapshot.Modes.Clone();
+   var paths=ordered.Select(m=>assignment[m.Key]).ToArray();var modes=(Mode[])snapshot.Modes.Clone();var additions=new List<Mode>();
    for(int i=0;i<paths.Length;i++){
     var p=paths[i];var pref=selection.Preferences[NativeDisplay.Key(p)];bool rotating=pref.Rotation>0&&pref.Rotation!=p.Target.Rotation;
     bool source=!rotating&&(p.Flags&1)!=0&&ValidMode(modes,p.Source.ModeIndex,1,p.Source.Id,p.Source.Adapter);
     bool target=source&&ValidMode(modes,p.Target.ModeIndex,2,p.Target.Id,p.Target.Adapter);
+    bool fixedResolution=pref.ResolutionWidth>0;
+    if(fixedResolution){
+     bool changed=!source||modes[p.Source.ModeIndex].Width!=(uint)pref.ResolutionWidth||modes[p.Source.ModeIndex].Height!=(uint)pref.ResolutionHeight;
+     if(!source){p.Source.ModeIndex=(uint)(modes.Length+additions.Count);additions.Add(new Mode{Type=1,Id=p.Source.Id,Adapter=p.Source.Adapter,PixelFormat=4,Width=(uint)pref.ResolutionWidth,Height=(uint)pref.ResolutionHeight,X=selection.Screens.First(m=>m.Key==NativeDisplay.Key(p)).X,Y=selection.Screens.First(m=>m.Key==NativeDisplay.Key(p)).Y});}
+     else {modes[p.Source.ModeIndex].Width=(uint)pref.ResolutionWidth;modes[p.Source.ModeIndex].Height=(uint)pref.ResolutionHeight;if(modes[p.Source.ModeIndex].PixelFormat<1||modes[p.Source.ModeIndex].PixelFormat>4)modes[p.Source.ModeIndex].PixelFormat=4;}
+     source=true;if(changed)target=false;
+    }
     p.Flags=1;if(!source)p.Source.ModeIndex=uint.MaxValue;if(!target){p.Target.ModeIndex=uint.MaxValue;p.Target.Refresh=new Rational();p.Target.Scanline=0;}
     if(pref.Rotation>0)p.Target.Rotation=(uint)pref.Rotation;if(p.Target.Rotation==0)p.Target.Rotation=1;if(p.Target.Scaling==0)p.Target.Scaling=128;paths[i]=p;
    }
+   modes=modes.Concat(additions).ToArray();
    // Supply only referenced modes; inactive routes must not accidentally reuse an unrelated source's timing.
    var indices=paths.SelectMany(p=>new[]{p.Source.ModeIndex,p.Target.ModeIndex}).Where(i=>i!=uint.MaxValue).Distinct().ToList();
    var compact=indices.Select(i=>modes[i]).ToArray();for(int i=0;i<paths.Length;i++){var p=paths[i];if(p.Source.ModeIndex!=uint.MaxValue)p.Source.ModeIndex=(uint)indices.IndexOf(p.Source.ModeIndex);if(p.Target.ModeIndex!=uint.MaxValue)p.Target.ModeIndex=(uint)indices.IndexOf(p.Target.ModeIndex);paths[i]=p;}
@@ -113,6 +132,12 @@ namespace ExternalDisplayGuard {
     if(Assign(monitors,index+1,candidates,chosen,used,ref visited))return true;used.Remove(source);chosen.Remove(key);}return false;
   }
   public static bool ValidMode(Mode[] modes,uint index,uint type,uint id,Luid adapter){return index<modes.Length&&modes[index].Type==type&&modes[index].Id==id&&modes[index].Adapter.ToString()==adapter.ToString();}
+  public static void PositionSuppliedModes(DisplayPath[] paths,Mode[] modes,Selection selection){
+   if(!paths.All(p=>ValidMode(modes,p.Source.ModeIndex,1,p.Source.Id,p.Source.Adapter)))return;
+   var projected=new Selection{Primary=selection.Primary,Preferences=selection.Preferences};
+   foreach(var screen in selection.Screens){var copy=screen.Clone();var path=paths.Single(p=>NativeDisplay.Key(p)==copy.Key);copy.Width=modes[path.Source.ModeIndex].Width;copy.Height=modes[path.Source.ModeIndex].Height;projected.Screens.Add(copy);}
+   var positions=Layout(projected);foreach(var path in paths){modes[path.Source.ModeIndex].X=positions[NativeDisplay.Key(path)][0];modes[path.Source.ModeIndex].Y=positions[NativeDisplay.Key(path)][1];}
+  }
   public static Dictionary<string,int[]> Layout(Selection selection){
    var screens=selection.Screens;var positions=new Dictionary<string,int[]>();
    if(screens.Any(x=>x.Width==0||x.Height==0))throw new InvalidOperationException("显示尺寸尚未稳定，请稍后重试。");
@@ -139,7 +164,13 @@ namespace ExternalDisplayGuard {
    if(snapshot.Paths.Where(x=>(x.Flags&1)!=0).Select(NativeDisplay.SourceKey).Distinct().Count()!=active.Count)return false;
    var primary=active.First(x=>x.Key==selection.Primary.Key);if(primary.X!=0||primary.Y!=0)return false;
    var actualSelection=new Selection{Screens=active,Primary=primary,Preferences=selection.Preferences};var layout=Layout(actualSelection);
-   foreach(var m in active){var pref=selection.Preferences[m.Key];if(m.X!=layout[m.Key][0]||m.Y!=layout[m.Key][1]||(pref.Rotation>0&&m.Rotation!=pref.Rotation))return false;}return true;
+   foreach(var m in active){var pref=selection.Preferences[m.Key];if(m.X!=layout[m.Key][0]||m.Y!=layout[m.Key][1]||(pref.Rotation>0&&m.Rotation!=pref.Rotation)||(pref.ResolutionWidth>0&&(m.Width!=(uint)pref.ResolutionWidth||m.Height!=(uint)pref.ResolutionHeight)))return false;}return true;
+  }
+  public static void Verify(Snapshot snapshot,Selection selection){
+   foreach(var wanted in selection.Screens){var pref=selection.Preferences[wanted.Key];if(pref.ResolutionWidth==0)continue;var actual=snapshot.Monitors.FirstOrDefault(m=>m.Key==wanted.Key&&m.Active);
+    if(actual!=null&&(actual.Width!=(uint)pref.ResolutionWidth||actual.Height!=(uint)pref.ResolutionHeight))throw new InvalidOperationException(wanted.Name+" 分辨率未达到 "+ResolutionSetting.Format(pref.ResolutionWidth,pref.ResolutionHeight)+"；实际 "+actual.Width+"×"+actual.Height+"。");
+   }
+   if(!Matches(snapshot,selection))throw new InvalidOperationException("系统未确认完整的屏幕组合、布局或方向。");
   }
  }
 }

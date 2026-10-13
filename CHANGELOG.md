@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.1.0-beta.2
+
+- Lock each selected monitor to its own desktop resolution and restore game/driver drift alongside scaling.
+- Enter width × height, keep the current resolution unlocked, or capture selected active monitors' current dimensions.
+- Persist dimensions in profiles, support inactive targets and portrait dimensions, and arrange layouts using new sizes.
+- Validate exact requests without silent source-mode substitution, verify actual dimensions and roll back rejected/unsupported modes.
+- Retain portable directory storage; compile and use offline simulated checks only.
+
 ## v1.1.0-beta.1
 
 - Support portable mode with a `portable.flag` next to the EXE; keep configuration and logs in the application directory without automatic installation or startup registration.
